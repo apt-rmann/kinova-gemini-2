@@ -1,0 +1,6 @@
+# Goal - move robot to a desired joint configuration
+float32[] joint_angles #  degrees
+---
+# Result
+bool success
+---

@@ -1,0 +1,7 @@
+# Goal - moves end effector in a straight along the gripper Z axis (forward/backward)
+float32 distance    # meters (+ is forward, - is backward)
+---
+# Result
+bool success
+---
+

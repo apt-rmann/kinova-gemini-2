@@ -1,0 +1,6 @@
+# Goal - command the gripper to a desired closure
+float32 position
+---
+# Result
+bool success
+---

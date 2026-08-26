@@ -1,0 +1,15 @@
+# Goal - drive the robot to a location with Twist (velocity) commands
+
+# goal position is published on /servo_vector (vector from EE to target), not sent in the action call
+
+# currently only used to bring food to the face
+
+float32 stop_distance   # how far away to stop from the target
+float32 hold_time       # how long to freeze robot once it reaches position
+---
+# Result
+bool success
+string message
+---
+# Feedback
+float32 distance_to_go
