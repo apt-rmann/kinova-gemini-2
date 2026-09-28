@@ -72,7 +72,13 @@ Controller::Controller() : Node("kortex_controller")
 
     // --- Publishers ---
     PubState = this->create_publisher<ros2_interfaces::msg::RobotState>("robot_state", 10);
+    // robot_state_publisher needs this to build the TF chain through the arm's revolute joints
+    PubJointState = this->create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
     Timer = this->create_wall_timer(std::chrono::milliseconds(50), std::bind(&Controller::publishState, this));
+
+    // --- Subscribers ---
+    SubStop = this->create_subscription<std_msgs::msg::Empty>(
+        "/stop", 10, std::bind(&Controller::handleStop, this, _1));
 
     RCLCPP_INFO(this->get_logger(), "Kinova Controller Initialized");
     
@@ -83,6 +89,7 @@ Controller::Controller() : Node("kortex_controller")
 
 // Command Gripper Callbacks
 rclcpp_action::GoalResponse Controller::handle_gripper_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const CommandGripper::Goal>) {
+    mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 rclcpp_action::CancelResponse Controller::handle_gripper_cancel(const std::shared_ptr<GoalHandleCommandGripper>) {
@@ -94,6 +101,7 @@ void Controller::handle_gripper_accepted(const std::shared_ptr<GoalHandleCommand
 
 // Move Straight Callbacks
 rclcpp_action::GoalResponse Controller::handle_straight_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const MoveStraight::Goal>) {
+    mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 rclcpp_action::CancelResponse Controller::handle_straight_cancel(const std::shared_ptr<GoalHandleMoveStraight>) {
@@ -105,6 +113,7 @@ void Controller::handle_straight_accepted(const std::shared_ptr<GoalHandleMoveSt
 
 // Move to Joints Callbacks
 rclcpp_action::GoalResponse Controller::handle_joints_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ros2_interfaces::action::MoveToJoints::Goal>) {
+    mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 rclcpp_action::CancelResponse Controller::handle_joints_cancel(const std::shared_ptr<GoalHandleMoveToJoints>) {
@@ -116,6 +125,7 @@ void Controller::handle_joints_accepted(const std::shared_ptr<GoalHandleMoveToJo
 
 // Move to Pose Callbacks
 rclcpp_action::GoalResponse Controller::handle_pose_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ros2_interfaces::action::MoveToPose::Goal>) {
+    mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 rclcpp_action::CancelResponse Controller::handle_pose_cancel(const std::shared_ptr<GoalHandleMoveToPose>) {
@@ -152,7 +162,53 @@ void Controller::publishState()
         for (int i = 0; i < 7; ++i) msg.joint_angles[i] = joints.joint_angles(i).value();
         msg.gripper_position = gripper_pos;
         PubState->publish(msg);
+
+        publishJointStates(joints, gripper_pos);
     } catch (...) {}
+}
+
+
+void Controller::publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos)
+{
+    // Kortex reports degrees in [0, 360); the URDF wants radians in (-pi, pi]
+    auto to_radians = [](float degrees) {
+        double rad = std::fmod(degrees * M_PI / 180.0 + M_PI, 2.0 * M_PI);
+        if (rad < 0.0) rad += 2.0 * M_PI;
+        return rad - M_PI;
+    };
+
+    auto msg = sensor_msgs::msg::JointState();
+    msg.header.stamp = this->now();
+
+    msg.name.reserve(8);
+    msg.position.reserve(8);
+    for (int i = 0; i < 7; ++i) {
+        msg.name.push_back("joint_" + std::to_string(i + 1));
+        msg.position.push_back(to_radians(joints.joint_angles(i).value()));
+    }
+
+    // the driving gripper joint; robot_state_publisher derives the five mimic joints from it
+    msg.name.push_back("finger_joint");
+    msg.position.push_back(std::clamp(static_cast<double>(gripper_pos), 0.0, 1.0) * FINGER_JOINT_CLOSED_RAD);
+
+    PubJointState->publish(msg);
+}
+
+
+// --- Subscribers ---
+void Controller::handleStop(const std_msgs::msg::Empty::SharedPtr)
+{
+    // halt the arm immediately, independent of whatever action thread is running
+    {
+        std::lock_guard<std::mutex> lock(mApiMutex);
+        try {
+            mBase->Stop();
+        } catch (std::exception& ex) {
+            RCLCPP_ERROR(this->get_logger(), "Kortex error while stopping: %s", ex.what());
+        }
+    }
+    mStopRequested = true;
+    RCLCPP_WARN(this->get_logger(), "Stop requested on /stop - arm halted.");
 }
 
 
@@ -160,7 +216,7 @@ void Controller::publishState()
 
 template<typename ActionT>
 Controller::PollOutcome Controller::pollUntilCartesianTarget(
-    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle, double target_x, double target_y, double target_z, const char* label, double timeout_s)
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle, double target_x, double target_y, double target_z, const char* label, double timeout_s, std::string& message_out)
 {
     // to check to see when the robot has moved where we wanted it to go
     const auto start = std::chrono::steady_clock::now();
@@ -170,7 +226,17 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
             std::lock_guard<std::mutex> lock(mApiMutex);
             mBase->Stop();
             RCLCPP_WARN(this->get_logger(), "%s cancelled.", label);
+            message_out = "canceled";
             return PollOutcome::CANCELLED;
+        }
+
+        if (mStopRequested) {
+            // the /stop callback already halted the arm, but stop again in case this goal started after it
+            std::lock_guard<std::mutex> lock(mApiMutex);
+            mBase->Stop();
+            RCLCPP_WARN(this->get_logger(), "%s stopped by /stop.", label);
+            message_out = "stopped by /stop";
+            return PollOutcome::STOPPED;
         }
 
         k_api::Base::Pose current;
@@ -180,7 +246,10 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
         }
 
         double dist = sqrt(pow(target_x - current.x(), 2) + pow(target_y - current.y(), 2) + pow(target_z - current.z(), 2));
-        if (dist < 0.01) return PollOutcome::REACHED;
+        if (dist < 0.01) {
+            message_out = "reached";
+            return PollOutcome::REACHED;
+        }
 
         if (timeout_s > 0.0) {
             double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -188,12 +257,14 @@ Controller::PollOutcome Controller::pollUntilCartesianTarget(
                 std::lock_guard<std::mutex> lock(mApiMutex);
                 mBase->Stop();
                 RCLCPP_ERROR(this->get_logger(), "%s timed out after %.1f s - stopping the arm.", label, elapsed);
+                message_out = "timed out after " + std::to_string(static_cast<int>(elapsed)) + " s";
                 return PollOutcome::TIMED_OUT;
             }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    message_out = "node shutting down";
     return PollOutcome::TIMED_OUT;
 }
 
@@ -329,12 +400,22 @@ void Controller::execute_gripper(const std::shared_ptr<GoalHandleCommandGripper>
         
         // intentionally not qualifying success as reaching the targegt position, because the gripper may have closed around an object and not reached the target
         RCLCPP_INFO(this->get_logger(), "Gripper command executed: current=%.2f, target=%.2f", current_position, target_position);
+
+        char position_msg[32];
+        snprintf(position_msg, sizeof(position_msg), "gripper at %.2f", current_position);
         result->success = true;
+        result->message = position_msg;
         goal_handle->succeed(result);
-        
+
+    } catch (std::exception& ex) {
+        RCLCPP_ERROR(this->get_logger(), "Gripper command failed: %s", ex.what());
+        result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
+        goal_handle->abort(result);
     } catch (...) {
         RCLCPP_ERROR(this->get_logger(), "Gripper command failed.");
         result->success = false;
+        result->message = "gripper command failed";
         goal_handle->abort(result);
     }
 }
@@ -346,9 +427,15 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
     auto result = std::make_shared<ros2_interfaces::action::MoveStraight::Result>();
 
     k_api::Base::Pose current;
-    {
+    try {
         std::lock_guard<std::mutex> lock(mApiMutex);
         current = mBase->GetMeasuredCartesianPose();
+    } catch (std::exception& ex) {
+        RCLCPP_ERROR(this->get_logger(), "Kortex Error reading pose for MoveStraight: %s", ex.what());
+        result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
+        goal_handle->abort(result);
+        return;
     }
 
     const k_api::Base::Pose target = shiftAlongToolZ(current, goal->distance);
@@ -376,7 +463,10 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
 
         const double timeout_s = 5;
 
-        auto outcome = pollUntilCartesianTarget<MoveStraight>(goal_handle, target.x(), target.y(), target.z(), "MoveStraight (Tool +Z)", timeout_s);
+        std::string poll_message;
+        auto outcome = pollUntilCartesianTarget<MoveStraight>(goal_handle, target.x(), target.y(), target.z(), "MoveStraight (Tool +Z)", timeout_s, poll_message);
+
+        result->message = poll_message;
 
         if (outcome == PollOutcome::CANCELLED) {
             result->success = false;
@@ -385,7 +475,7 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
         }
         if (outcome != PollOutcome::REACHED) {
             result->success = false;
-            goal_handle->abort(result);
+            goal_handle->abort(result); // canceled() is only valid after a cancel request
             return;
         }
 
@@ -395,6 +485,7 @@ void Controller::execute_straight(const std::shared_ptr<GoalHandleMoveStraight> 
     } catch (k_api::KDetailedException& ex) {
         RCLCPP_ERROR(this->get_logger(), "Kortex Error during MoveStraight (Tool Z Axis): %s", ex.what());
         result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
         goal_handle->abort(result);
     }
 }
@@ -412,6 +503,7 @@ void Controller::execute_joints(const std::shared_ptr<GoalHandleMoveToJoints> go
     if (goal->joint_angles.size() < 7) { // sanity check
         RCLCPP_ERROR(this->get_logger(), "Joint target has invalid joint count: %zu (expected 7)", goal->joint_angles.size());
         result->success = false;
+        result->message = "invalid joint count";
         goal_handle->abort(result);
         return;
     }
@@ -441,22 +533,40 @@ void Controller::execute_joints(const std::shared_ptr<GoalHandleMoveToJoints> go
     } catch (k_api::KDetailedException& ex) {
         RCLCPP_ERROR(this->get_logger(), "Kortex Error during MoveToJoints: %s", ex.what());
         result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
         goal_handle->abort(result);
         return;
     }
 
     // Polling / completion check loop
+    const double timeout_s = 30.0;
+    const auto start = std::chrono::steady_clock::now();
+    k_api::Base::JointAngles current_joints;
+
     try {
         while (rclcpp::ok()) {
             if (goal_handle->is_canceling()) {
                 std::lock_guard<std::mutex> lock(mApiMutex);
                 mBase->Stop();
                 result->success = false;
+                result->message = "canceled";
                 goal_handle->canceled(result);
                 return;
             }
-            
-            k_api::Base::JointAngles current_joints;
+
+            if (mStopRequested) {
+                // the /stop callback already halted the arm, but stop again in case this goal started after it
+                {
+                    std::lock_guard<std::mutex> lock(mApiMutex);
+                    mBase->Stop();
+                }
+                RCLCPP_WARN(this->get_logger(), "MoveToJoints stopped by /stop.");
+                result->success = false;
+                result->message = "stopped by /stop";
+                goal_handle->abort(result); // canceled() is only valid after a cancel request
+                return;
+            }
+
             {
                 std::lock_guard<std::mutex> lock(mApiMutex);
                 current_joints = mBase->GetMeasuredJointAngles();
@@ -475,18 +585,41 @@ void Controller::execute_joints(const std::shared_ptr<GoalHandleMoveToJoints> go
             }
 
             if (max_diff < 1.0f) break; // 1 degree threshold for reliable completion
+
+            double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (elapsed > timeout_s) {
+                {
+                    std::lock_guard<std::mutex> lock(mApiMutex);
+                    mBase->Stop();
+                }
+                RCLCPP_ERROR(this->get_logger(), "MoveToJoints timed out after %.1f s - stopping the arm.", elapsed);
+                result->success = false;
+                result->message = "timed out after " + std::to_string(static_cast<int>(elapsed)) + " s";
+                goal_handle->abort(result);
+                return;
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        RCLCPP_INFO(this->get_logger(), "Joint movement complete. Joint angles: (%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1)",
+        if (current_joints.joint_angles_size() < 7) { // never polled (node shutting down)
+            result->success = false;
+            result->message = "node shutting down";
+            goal_handle->abort(result);
+            return;
+        }
+
+        RCLCPP_INFO(this->get_logger(), "Joint movement complete. Joint angles: (%.1f, %.1f, %.1f, %.1f, %.1f, %.1f, %.1f)",
             current_joints.joint_angles(0).value(), current_joints.joint_angles(1).value(),
             current_joints.joint_angles(2).value(), current_joints.joint_angles(3).value(),
             current_joints.joint_angles(4).value(), current_joints.joint_angles(5).value(),
             current_joints.joint_angles(6).value());
         result->success = true;
+        result->message = "reached";
         goal_handle->succeed(result);
     } catch (k_api::KDetailedException& ex) {
         RCLCPP_ERROR(this->get_logger(), "Kortex Error during MoveToJoints: %s", ex.what());
         result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
         goal_handle->abort(result);
     }
 }
@@ -513,8 +646,9 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
     std::string ik_error;
 
     if (!solveIK(target, ik_solution, ik_error)) {
-        RCLCPP_ERROR(this->get_logger(), "IK found no solution - aborting move.");
+        RCLCPP_ERROR(this->get_logger(), "IK found no solution - aborting move: %s", ik_error.c_str());
         result->success = false;
+        result->message = "IK found no solution for target pose";
         goal_handle->abort(result);
         return;
     }
@@ -531,7 +665,10 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
 
         RCLCPP_INFO(this->get_logger(),"Moving to pose target: (%.3f, %.3f, %.3f)",goal->x, goal->y, goal->z);
 
-        auto outcome = pollUntilCartesianTarget<MoveToPose>(goal_handle, target.x(), target.y(), target.z(), "ExecutePose (joint space)", 0.0);
+        std::string poll_message;
+        auto outcome = pollUntilCartesianTarget<MoveToPose>(goal_handle, target.x(), target.y(), target.z(), "ExecutePose (joint space)", 15.0, poll_message);
+
+        result->message = poll_message;
 
         if (outcome == PollOutcome::CANCELLED) {
             result->success = false;
@@ -540,7 +677,7 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
         }
         if (outcome != PollOutcome::REACHED) {
             result->success = false;
-            goal_handle->abort(result);
+            goal_handle->abort(result); // canceled() is only valid after a cancel request
             return;
         }
 
@@ -550,6 +687,7 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
     } catch (k_api::KDetailedException& ex) {
         RCLCPP_ERROR(this->get_logger(), "Kortex Error: %s", ex.what());
         result->success = false;
+        result->message = std::string("Kortex error: ") + ex.what();
         goal_handle->abort(result);
     }
 

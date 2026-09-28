@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.RobotCaregiver" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+         <item name="colorPrimary">@color/mh_1</item>
+        <item name="colorSecondary">@color/mh_2</item>
+    </style>
+
+    <style name="Theme.RobotCaregiver" parent="Base.Theme.RobotCaregiver" />
+</resources>

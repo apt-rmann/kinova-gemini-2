@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/white"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_weight="0"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:src="@drawable/mh"
+            android:scaleType="fitStart"
+            ></ImageView>
+
+        <ImageView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.5"
+            android:scaleType="fitStart"
+            ></ImageView>
+
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="70dp"
+            android:layout_height="70dp"
+            android:scaleType="fitCenter"
+            android:backgroundTint="@color/white"
+            android:src="@mipmap/settings_round"/>
+
+    </LinearLayout>
+
+<!--    change to imageview once cam feed is in-->
+    <TextView
+        android:id="@+id/frameView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp"
+        android:adjustViewBounds="true"
+        android:background="#11000000"
+        android:textSize="22sp"
+        android:text="Insert Camera Feed Here"
+        android:contentDescription="Latest camera still from the robot"
+        android:scaleType="fitCenter" />
+
+    <TextView
+        android:id="@+id/statusView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="16dp"
+        android:gravity="top"
+        android:textSize="22sp"
+        android:textColor="@color/mh_1"
+        android:text=""
+        android:scrollbars="vertical"/>
+
+    <Button
+        android:id="@+id/startStopButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:minHeight="48dp"
+        android:textColor="@color/white"
+        android:backgroundTint="@color/btn_background_selector"
+        android:textSize="20sp"
+        android:text="Start" />
+
+    <Button
+        android:id="@+id/connectButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:minHeight="48dp"
+        android:textSize="20sp"
+        android:text="Connect"
+        android:textColor="@color/white"
+        android:backgroundTint="@color/btn_background_selector"/>
+
+</LinearLayout>

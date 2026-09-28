@@ -3,4 +3,5 @@ float32 position
 ---
 # Result
 bool success
+string message
 ---

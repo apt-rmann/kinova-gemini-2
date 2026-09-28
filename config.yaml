@@ -1,0 +1,47 @@
+model:
+  name: gemini-robotics-er-2-streaming-preview
+  thinking_level: medium            # none | minimal | low | medium | high
+  include_thoughts: true         # thoughts are shown in the UI, never acted on
+  system_prompt: prompts/system.md
+  context_compression: true      # sliding-window compression for long, image-heavy sessions
+
+tools:                           # enabled tools; comment a line out to remove a tool
+  - look
+  - move_to
+  - move_relative
+  - move_straight
+  - set_gripper
+  - go_to_preset
+  - stop
+  # - move_to_pose               # raw 6-DoF Euler pose; off by default
+
+perception:
+  detector_model: gemini-3.5-flash-lite   # any non-streaming Gemini model that returns box_2d; verify availability
+  detector_thinking_level: medium   # none | minimal | low | medium | high
+  sam2_repo: /home/mcrr-lab/raf-live/SAM2_streaming   # local SAM2 checkout (not pip-installed)
+  sam2_config: sam2.1/sam2.1_hiera_t.yaml            # hydra name under <sam2_repo>/configs
+  sam2_checkpoint: checkpoints/sam2.1/sam2.1_hiera_small.pt   # relative to sam2_repo, or absolute
+  device: cuda
+  send_annotated_image: true     # after look, the model receives the annotated image
+
+camera:
+  color_topic: /camera/realsense/color/image_raw
+  depth_topic: /camera/realsense/aligned_depth_to_color/image_raw
+  info_topic: /camera/realsense/aligned_depth_to_color/camera_info
+  projection_frame: physical_realsense_link   # frame that deprojected points are expressed in (see §6.5)
+  base_frame: base_link
+  send_width: 640                # images are resized to this width before sending
+  jpeg_quality: 80
+  settle_s: 0.3                  # wait after motion before capturing the post-action frame
+  sync_slop_s: 0.05              # max color/depth timestamp difference
+
+presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
+  home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
+  user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
+
+ros:
+  instruction_topic: /user_instructions
+  stop_topic: /stop
+  state_topic: /robot_state
+  events_topic: /agent/events
+  image_topic: /agent/model_image

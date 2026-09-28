@@ -3,4 +3,5 @@ float32[] joint_angles #  degrees
 ---
 # Result
 bool success
+string message
 ---

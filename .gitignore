@@ -1,5 +1,19 @@
+# colcon
 build/
 install/
 log/
-CLAUDE.md
+
+# Kortex C++ API (vendor download, unpacked locally)
 src/kortex_controller/kortex_api
+
+# secrets (.env.example is the committed template)
+.env
+
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+
+# local-only
+CLAUDE.md
+.claude/settings.local.json

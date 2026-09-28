@@ -2,6 +2,8 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <sensor_msgs/msg/joint_state.hpp>
 
 
 // Kortex API
@@ -10,7 +12,11 @@
 #include <SessionManager.h>
 #include <RouterClient.h>
 #include <TransportClientTcp.h>
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <chrono>
 #include <thread>
@@ -60,6 +66,9 @@ private:
     // Mutex for thread-safe API access
     std::mutex mApiMutex;
 
+    // set by the /stop subscriber, checked by every motion polling loop
+    std::atomic<bool> mStopRequested{false};
+
     // Action Servers
     rclcpp_action::Server<CommandGripper>::SharedPtr CommandGripperServer;
     rclcpp_action::Server<MoveStraight>::SharedPtr MoveStraightServer;
@@ -72,10 +81,19 @@ private:
 
     // Publishers and Timers
     rclcpp::Publisher<ros2_interfaces::msg::RobotState>::SharedPtr PubState;
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr PubJointState;
     rclcpp::TimerBase::SharedPtr Timer;
+
+    // Subscribers
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr SubStop;
+
+    // finger_joint upper limit in the URDF: 0 rad open, 0.7 rad fully closed
+    static constexpr double FINGER_JOINT_CLOSED_RAD = 0.7;
 
     // Publishers/Helpers
     void publishState();
+    void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
+    void handleStop(const std_msgs::msg::Empty::SharedPtr);
     float get_gripper_position();
 
     // Action Execution Functions
@@ -116,12 +134,12 @@ private:
     void toolZAxis(float theta_x, float theta_y, float theta_z, double out[3]) const;
     k_api::Base::Pose shiftAlongToolZ(const k_api::Base::Pose& pose, double distance) const;
 
-    enum class PollOutcome { REACHED, CANCELLED, TIMED_OUT };
+    enum class PollOutcome { REACHED, CANCELLED, STOPPED, TIMED_OUT };
 
     template<typename ActionT>
     PollOutcome pollUntilCartesianTarget(
         const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>> goal_handle,
         double target_x, double target_y, double target_z,
-        const char* label, double timeout_s);
+        const char* label, double timeout_s, std::string& message_out);
 
 };
