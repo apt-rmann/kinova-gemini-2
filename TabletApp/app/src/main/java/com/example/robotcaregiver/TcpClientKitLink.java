@@ -1,13 +1,21 @@
 package com.example.robotcaregiver;
 
+import android.content.Context;
+
 import androidx.annotation.NonNull;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+
+import fi.iki.elonen.NanoHTTPD;
 
 public class TcpClientKitLink implements KitLink{
 
@@ -17,9 +25,12 @@ public class TcpClientKitLink implements KitLink{
     private KitLink.Listener listener;
     private Socket socket;
     private OutputStream out;
-    private boolean running;
 
-    public TcpClientKitLink(String host, int port){
+    private StreamServer streamServer;
+
+
+
+    public TcpClientKitLink(String host, int port, Context context){
         this.host = host;
         this.port = port;
     }
@@ -33,27 +44,30 @@ public class TcpClientKitLink implements KitLink{
                 s.connect(new InetSocketAddress(host, port), 8000);
                 socket = s;
                 out = s.getOutputStream();
-                running = true;
                 notifyConn(true, "Connected to kit " + host + ":" + port);
-                readLoop(s);
+                InputStream tcpStream = socket.getInputStream();
+                streamServer = new StreamServer(port, tcpStream, new StreamServer.KitMessageListener() {
+                    @Override
+                    public void onNonVideoStreamReceived(String message) {
+                        listener.onKitStatus(message);
+                    }
+                });
+                streamServer.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
+                setupCamera();
             } catch (Exception e){
                 notifyConn(false, "Connection failed: " + e.getMessage());
             }
         }, "TcpClientKitConnection").start();
     }
 
-    private void readLoop(Socket s){
-        try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
-            String line;
-            while(running && (line = reader.readLine()) != null){
-                if(listener != null && !line.isEmpty()){
-                    listener.onKitStatus(line);
-                }
-            }
-        } catch (Exception e){
-            if(running) notifyConn(false, "Connection lost: " + e.getMessage());
+    private void setupCamera(){
+
+        if (listener != null) {
+            // Notify your UI implementation of the loopback HTTP URI
+            String localVideoUrl = "http://localhost:" + port + "/stream";
+            listener.onKitCamera(localVideoUrl);
         }
+
     }
 
     public void sendInstruction(@NonNull String text){
@@ -74,9 +88,9 @@ public class TcpClientKitLink implements KitLink{
     }
 
     public void disconnect() {
-        running = false;
         try {
             if (socket != null) socket.close();
+            if (streamServer != null) streamServer.stop();
         } catch (Exception e) {}
         notifyConn(false, "Disconnected");
     }

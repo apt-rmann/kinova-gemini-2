@@ -14,7 +14,11 @@ import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Base64;
 import android.util.Log;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.TextView;
@@ -26,6 +30,9 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
+import androidx.media3.common.MediaItem;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.ui.PlayerView;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -66,6 +73,7 @@ public class MainActivity extends AppCompatActivity
 
     private TextView statusView;
     private Button startStopButton;
+    private WebView frameView;
     private ImageButton settingsButton;
     private Button connectButton;
 
@@ -90,6 +98,15 @@ public class MainActivity extends AppCompatActivity
         startStopButton = findViewById(R.id.startStopButton);
         settingsButton  = findViewById(R.id.settingsButton);
         connectButton   = findViewById(R.id.connectButton);
+        frameView       = findViewById(R.id.frameView);
+        WebSettings webSettings = frameView.getSettings();
+        webSettings.setJavaScriptEnabled(true);
+        webSettings.setLoadWithOverviewMode(true);
+        webSettings.setUseWideViewPort(true);
+        webSettings.setAllowFileAccess(true);
+        webSettings.setAllowContentAccess(true);
+        webSettings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        frameView.setWebViewClient(new WebViewClient());
 
         statusView.setMovementMethod(new ScrollingMovementMethod());
         settings = new AppSettings(this);
@@ -421,7 +438,7 @@ public class MainActivity extends AppCompatActivity
         connectedHost = host;
         kit = settings.isBluetooth()
                 ? new BluetoothKitLink(settings.getKitMac(), settings.getChannel(), this)
-                : (settings.isBle() ? new BleKitLink(this) : new TcpClientKitLink(host, KIT_PORT));
+                : (settings.isBle() ? new BleKitLink(this) : new TcpClientKitLink(host, KIT_PORT, this));
         kit.setListener(this);
 
         addStatus("Connecting over " + type + "\u2026");
@@ -486,6 +503,44 @@ public class MainActivity extends AppCompatActivity
 
     @Override public void onDbgMsg(@NonNull String msg) {
         if(DEBUGGING) runOnUiThread(() -> addStatus("Dbg: " + msg));
+    }
+
+    @Override
+    public void onKitCamera(String streamUrl) {
+        runOnUiThread(() -> {
+            // Mimic the original layout using an HTML payload injected locally
+            String htmlData = "<html><head><style>"
+                    + "body { margin: 0; background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; }"
+                    + "img { width: 100%; height: 100%; object-fit: contain; }"
+                    + "</style></head><body>"
+                    + "<img src=\"" + streamUrl + "\" alt=\"Camera Feed Link\">"
+                    + "</body></html>";
+
+            // Load the loopback network content string into the UI container window
+            frameView.loadDataWithBaseURL(null, htmlData, "text/html", "UTF-8", null);
+        });
+    }
+
+    @Override
+    public void onKitCamera(byte[] image){
+
+        String base64Image = Base64.encodeToString(image, Base64.DEFAULT);
+
+        String htmlData = "<html><head><style>"
+                + "body { margin: 0; background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; }"
+                + "img { width: 100%; height: 100%; object-fit: contain; }"
+                + "</style></head><body>"
+                + "<img src='data:image/png;base64,"
+                + base64Image
+                + "' />"
+                + "</body></html>";
+
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                frameView.loadDataWithBaseURL("file:///android_asset/", htmlData, "text/html", "utf-8", "");
+            }
+        });
     }
 
     private void addStatus(@NonNull String text) {

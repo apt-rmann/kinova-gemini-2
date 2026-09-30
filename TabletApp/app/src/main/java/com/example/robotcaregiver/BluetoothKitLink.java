@@ -15,10 +15,14 @@ import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.UUID;
 
 /**
@@ -123,17 +127,30 @@ public class BluetoothKitLink implements KitLink {
 
     private void readLoop(BluetoothSocket s) {
         try {
-            BufferedReader br = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
-            String line;
-            while (running && (line = br.readLine()) != null) {
-                if(listener != null && !line.isEmpty()){
-                    listener.onKitStatus(line);
+            InputStream is = s.getInputStream();
+            DataInputStream buffer = new DataInputStream(is);
+
+            int line;
+            while (running) {
+                if(listener != null){
+
+                    line = buffer.read();
+                    if(line == -1) continue;
+
+                    int frameLength = buffer.readInt();
+                    if (frameLength > 0) {
+                        byte[] frame = new byte[frameLength];
+                        buffer.readFully(frame);
+                        if(line == (byte)0x02) listener.onKitStatus(new String(frame, StandardCharsets.UTF_8));
+                        else if (line == (byte)0x01) listener.onKitCamera(frame);
+                    }
                 }
             }
         } catch (Exception e) {
             if (running) notifyConn(false, "Read loop ended: " + e.getMessage());
         }
     }
+
 
     @Override
     public void sendInstruction(@NonNull String command) {

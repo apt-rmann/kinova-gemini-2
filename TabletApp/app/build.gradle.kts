@@ -51,4 +51,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("com.alphacephei:vosk-android:0.3.75")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("androidx.media3:media3-exoplayer:1.4.1")
+    implementation("androidx.media3:media3-ui:1.4.1")
 }
