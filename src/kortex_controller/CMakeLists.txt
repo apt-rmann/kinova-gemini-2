@@ -12,6 +12,7 @@ find_package(rclcpp_action REQUIRED)
 find_package(ros2_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 # Kortex API paths (local to this package)
 set(KORTEX_API_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kortex_api")
@@ -42,6 +43,7 @@ ament_target_dependencies(controller
   ros2_interfaces
   std_msgs
   sensor_msgs
+  geometry_msgs
 )
 
 target_link_libraries(controller

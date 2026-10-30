@@ -5,10 +5,11 @@ import time
 from dataclasses import dataclass
 
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Vector3Stamped
 from rclpy.action import ActionClient
 from std_msgs.msg import Empty
 
-from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose
+from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose, ServoToTarget
 from ros2_interfaces.msg import RobotState
 from ros2_interfaces.srv import SetToolLength
 
@@ -40,8 +41,10 @@ class Robot:
             'move_straight': ActionClient(node, MoveStraight, 'move_straight'),
             'move_to_joints': ActionClient(node, MoveToJoints, 'move_to_joints'),
             'move_to_pose': ActionClient(node, MoveToPose, 'move_to_pose'),
+            'servo_to_target': ActionClient(node, ServoToTarget, 'servo_to_target'),
         }
         self._set_tool_length = node.create_client(SetToolLength, 'set_tool_length')
+        self._servo_pub = node.create_publisher(Vector3Stamped, '/servo_vector', 10)
 
         self._state = None
         node.create_subscription(RobotState, ros['state_topic'], self._on_state, 10)
@@ -109,6 +112,22 @@ class Robot:
             known = ', '.join(self.presets)
             return ActionResult(False, 'rejected', f'unknown preset {name!r}; known presets: {known}')
         return await self.move_to_joints(angles)
+
+    async def servo_to_target(self, stop_distance: float) -> ActionResult:
+        """Twist-servo the TCP along the vectors streamed with publish_servo_vector() until one is
+        shorter than stop_distance (m). Keep publishing while this runs: the controller stops
+        the arm if the stream goes quiet."""
+        goal = ServoToTarget.Goal()
+        goal.stop_distance = float(stop_distance)
+        return await self._send_goal('servo_to_target', goal)
+
+    def publish_servo_vector(self, vector):
+        """Vector from the TCP to the target, base frame, meters."""
+        msg = Vector3Stamped()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self.cfg['camera']['base_frame']
+        msg.vector.x, msg.vector.y, msg.vector.z = (float(c) for c in vector)
+        self._servo_pub.publish(msg)
 
     async def set_tool_length(self, length: float) -> ActionResult:
         """Move the TCP `length` meters past the bare gripper along tool +Z (0 = bare gripper).

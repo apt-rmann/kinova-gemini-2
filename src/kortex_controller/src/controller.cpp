@@ -22,10 +22,22 @@ Controller::Controller() : Node("kortex_controller")
     // z of the bare gripper's TCP in the Kortex tool configuration; written to the arm at startup
     this->declare_parameter("bare_tool_z", 0.22);
 
+    // ServoToTarget: twist = kp * vector + kd * d(vector)/dt, capped at max speed
+    this->declare_parameter("servo_kp", 1.0);
+    this->declare_parameter("servo_kd", 0.0);
+    this->declare_parameter("servo_max_speed", 0.10);
+    this->declare_parameter("servo_vector_timeout_s", 0.5);
+    this->declare_parameter("servo_timeout_s", 60.0);
+
     std::string robot_ip = this->get_parameter("robot_ip").as_string();
     mIKAttempts = std::max(1, static_cast<int>(this->get_parameter("ik_attempts").as_int()));
     mIKPositionTol = this->get_parameter("ik_position_tolerance_m").as_double();
     mIKOrientationTol = this->get_parameter("ik_orientation_tolerance_deg").as_double();
+    mServoKp = this->get_parameter("servo_kp").as_double();
+    mServoKd = this->get_parameter("servo_kd").as_double();
+    mServoMaxSpeed = this->get_parameter("servo_max_speed").as_double();
+    mServoVectorTimeout = this->get_parameter("servo_vector_timeout_s").as_double();
+    mServoTimeout = this->get_parameter("servo_timeout_s").as_double();
 
     // --- Kortex API Setup ---
     mTransport = new k_api::TransportClientTcp();
@@ -107,6 +119,10 @@ Controller::Controller() : Node("kortex_controller")
     SubJointVelocity = this->create_subscription<std_msgs::msg::Float64MultiArray>(
         "/joint_velocity", 10, std::bind(&Controller::handleJointVelocity, this, _1));
 
+    // ServoToTarget's target: vector from the TCP to the target, base frame, meters
+    SubServoVector = this->create_subscription<geometry_msgs::msg::Vector3Stamped>(
+        "/servo_vector", 10, std::bind(&Controller::handleServoVector, this, _1));
+
     RCLCPP_INFO(this->get_logger(), "Kinova Controller Initialized");
     
 }
@@ -164,6 +180,7 @@ void Controller::handle_pose_accepted(const std::shared_ptr<GoalHandleMoveToPose
 
 // Servo to Target Callbacks
 rclcpp_action::GoalResponse Controller::handle_servo_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ServoToTarget::Goal>) {
+    mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 rclcpp_action::CancelResponse Controller::handle_servo_cancel(const std::shared_ptr<GoalHandleServoToTarget>) {
@@ -271,6 +288,17 @@ void Controller::handleJointVelocity(const std_msgs::msg::Float64MultiArray::Sha
     } catch (std::exception& ex) {
         RCLCPP_ERROR(this->get_logger(), "Kortex error on /joint_velocity: %s", ex.what());
     }
+}
+
+
+void Controller::handleServoVector(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lock(mServoMutex);
+    mServoVector[0] = msg->vector.x;
+    mServoVector[1] = msg->vector.y;
+    mServoVector[2] = msg->vector.z;
+    mServoStamp = std::chrono::steady_clock::now();
+    ++mServoSeq;
 }
 
 
@@ -894,14 +922,141 @@ void Controller::execute_pose(const std::shared_ptr<GoalHandleMoveToPose> goal_h
 
 }
 
-// --- Servo to Target Action Execution --- not implemented yet, will buld out the rest first
+// --- Servo to Target Action Execution ---
 void Controller::execute_servo(const std::shared_ptr<GoalHandleServoToTarget> goal_handle)
 {
-    auto result = std::make_shared<ros2_interfaces::action::ServoToTarget::Result>();
-    result->success = false;
-    result->message = "ServoToTarget is not implemented yet.";
-    RCLCPP_ERROR(this->get_logger(), "%s", result->message.c_str());
-    goal_handle->abort(result);
+    /*
+    The caller measures the target and streams the vector from the TCP to it on /servo_vector. Each new
+    vector becomes one base-frame twist (PD on the vector, capped at servo_max_speed), and the goal succeeds
+    once the vector is shorter than stop_distance. Kortex keeps executing the last twist until it gets
+    another command, so every way out of here stops the arm - including the vector stream going quiet.
+    */
+    const auto goal = goal_handle->get_goal();
+    auto result = std::make_shared<ServoToTarget::Result>();
+    auto feedback = std::make_shared<ServoToTarget::Feedback>();
+    using clock = std::chrono::steady_clock;
+    auto seconds = [](clock::duration d) { return std::chrono::duration<double>(d).count(); };
+
+    auto stop_arm = [this]() {
+        std::lock_guard<std::mutex> lock(mApiMutex);
+        try {
+            mBase->Stop();
+        } catch (std::exception& ex) {
+            RCLCPP_ERROR(this->get_logger(), "Kortex error while stopping ServoToTarget: %s", ex.what());
+        }
+    };
+    auto fail = [&](const std::string& message) {
+        stop_arm();
+        RCLCPP_WARN(this->get_logger(), "ServoToTarget failed: %s", message.c_str());
+        result->success = false;
+        result->message = message;
+        goal_handle->abort(result); // canceled() is only valid after a cancel request
+    };
+
+    // vectors published before this goal don't count
+    uint64_t last_seq;
+    {
+        std::lock_guard<std::mutex> lock(mServoMutex);
+        last_seq = mServoSeq;
+    }
+
+    RCLCPP_INFO(this->get_logger(), "Servoing on /servo_vector until within %.3f m", goal->stop_distance);
+
+    const auto start = clock::now();
+    auto last_vector_time = start;   // the stream gets servo_vector_timeout_s to start, too
+    bool have_prev = false;
+    double prev_e[3]{0.0, 0.0, 0.0};
+    clock::time_point prev_stamp;
+
+    while (rclcpp::ok()) {
+        if (goal_handle->is_canceling()) {
+            stop_arm();
+            RCLCPP_WARN(this->get_logger(), "ServoToTarget cancelled.");
+            result->success = false;
+            result->message = "canceled";
+            goal_handle->canceled(result);
+            return;
+        }
+        if (mStopRequested) {
+            fail("stopped by /stop");
+            return;
+        }
+
+        const auto now = clock::now();
+        if (seconds(now - start) > mServoTimeout) {
+            fail("timed out after " + std::to_string(static_cast<int>(mServoTimeout)) + " s");
+            return;
+        }
+
+        double e[3];
+        uint64_t seq;
+        clock::time_point stamp;
+        {
+            std::lock_guard<std::mutex> lock(mServoMutex);
+            std::copy(mServoVector, mServoVector + 3, e);
+            seq = mServoSeq;
+            stamp = mServoStamp;
+        }
+
+        if (seq == last_seq) {
+            // nothing new: the last twist is still running, as long as the stream is alive
+            if (seconds(now - last_vector_time) > mServoVectorTimeout) {
+                fail(have_prev ? "no new /servo_vector for " + std::to_string(mServoVectorTimeout) + " s"
+                               : "no /servo_vector received");
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+        last_seq = seq;
+        last_vector_time = stamp;
+
+        const double dist = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+        feedback->distance_to_go = static_cast<float>(dist);
+        goal_handle->publish_feedback(feedback);
+
+        if (dist < goal->stop_distance) {
+            stop_arm();
+            RCLCPP_INFO(this->get_logger(), "ServoToTarget reached (%.3f m to go).", dist);
+            result->success = true;
+            result->message = "reached";
+            goal_handle->succeed(result);
+            return;
+        }
+
+        // PD on the vector; the derivative uses the time between vectors, not the loop period
+        double v[3];
+        const double dt = have_prev ? seconds(stamp - prev_stamp) : 0.0;
+        for (int i = 0; i < 3; ++i) {
+            v[i] = mServoKp * e[i];
+            if (dt > 1e-3) v[i] += mServoKd * (e[i] - prev_e[i]) / dt;
+            prev_e[i] = e[i];
+        }
+        prev_stamp = stamp;
+        have_prev = true;
+
+        const double speed = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (speed > mServoMaxSpeed) {
+            for (double& vi : v) vi *= mServoMaxSpeed / speed;
+        }
+
+        k_api::Base::TwistCommand command;
+        command.set_reference_frame(k_api::Common::CARTESIAN_REFERENCE_FRAME_BASE);
+        auto* twist = command.mutable_twist();   // angular stays 0: translation only
+        twist->set_linear_x(static_cast<float>(v[0]));
+        twist->set_linear_y(static_cast<float>(v[1]));
+        twist->set_linear_z(static_cast<float>(v[2]));
+
+        try {
+            std::lock_guard<std::mutex> lock(mApiMutex);
+            mBase->SendTwistCommand(command);
+        } catch (std::exception& ex) {
+            fail(std::string("Kortex error: ") + ex.what());
+            return;
+        }
+    }
+
+    fail("node shutting down");
 }
 
 
