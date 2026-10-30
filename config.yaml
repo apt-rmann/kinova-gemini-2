@@ -18,9 +18,11 @@ skills:                          # enabled skills; comment a line out to remove 
   - detach
   # - move_to_pose               # raw 6-DoF Euler pose; off by default
 
-holster:                         # ArUco marker id -> tool in that holster slot. Maintain by hand to match physical holster
-  1: nothing                 
-  2: fork                    
+tools:   # holster tools - maintain to match the physical holster.
+                                 #   marker: ArUco id on the tool's holster slot
+                                 #   length (meters): how far the tool extends the TCP along tool +Z, meters (measured by hand; default 0)
+  nothing: {marker: 1}
+  fork: {marker: 2, length: 0.1}
 
 presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
   home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position

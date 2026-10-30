@@ -37,7 +37,7 @@ source install/setup.bash
 sed -i '1s|.*|#!/home/mcrr-lab/venvs/kinova-gemini/bin/python3|' install/{gemini_agent/lib/gemini_agent,app_interface/lib/app_interface}/*
 ```
 
-Edit `config.yaml` for your setup: model, enabled skills, SAM2 paths, camera topics, preset joint positions, and the `holster:` map of ArUco marker id to the physical tool in that slot.
+Edit `config.yaml` for your setup: model, enabled skills, SAM2 paths, camera topics, preset joint positions, and the `tools:` map of each tool the robot will use to its slot's ArUco marker id and its length.
 
 ## Running
 

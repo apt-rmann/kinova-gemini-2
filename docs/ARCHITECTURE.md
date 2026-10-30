@@ -40,8 +40,11 @@ Primitives are ROS2 actions in `kortex_controller`, a C++ node that holds the Ko
 | `MoveToJoints` | action | Move to a 7-joint configuration |
 | `MoveStraight` | action | Move a distance along the gripper's own Z axis (+ forward, − back) |
 | `CommandGripper` | action | Set the gripper opening, 0 = open to 1 = closed |
+| `SetToolLength` | service | Move the TCP a distance along tool +Z past the bare gripper, to the tip of an attached tool |
 | `/stop` | topic | Halt the arm immediately and abort any running primitive |
-| `/robot_state` | topic | Current pose, joint angles, gripper position |
+| `/robot_state` | topic | Current pose, joint angles, gripper position, tool length |
+
+**Tool TCP.** The TCP is the Kortex tool frame, so every primitive and the reported pose follow it with no per-primitive code. The controller writes the bare-gripper TCP (`bare_tool_z`, 0.22 m) to the arm at startup. `attach` then extends it by the tool's hand-measured `length` in `config.yaml`'s `tools:` block (which also gives each tool's holster marker id), and `detach` resets it to the bare gripper before seating the tool.
 
 Two more interfaces are declared but not used by any skill yet: `ComputeIK` (service) and `ServoToTarget` (action, not implemented).
 
@@ -142,5 +145,5 @@ The operator's behavior is set in `prompts/system.md`,
 | `kinova_bringup` | `robot.launch.py` (primitives, camera, TF, rosbridge) and `agent.launch.py` (adds the operator) |
 | `web/index.html` | Shows each user turn, model thought, skill call and result, and every image the model saw|
 
-The layers communicate only over ROS 2 topics and actions, so each one can be restarted or replaced on its own. `agent_node` publishes every step to `/agent/events` (`user_text`, `model_thought`, `skill_call`, `skill_result`, `look`, `holster`, ...) and every image sent to the model to `/agent/model_image`, so the UI shows exactly what the operator saw.
+The layers communicate only over ROS 2 topics and actions, so each one can be restarted or replaced on its own. `agent_node` publishes every step to `/agent/events` (`user_text`, `model_thought`, `skill_call`, `skill_result`, `look`, `holster`, ...) and every image sent to the model to `/agent/model_image`, so the UI shows exactly what the model saw.
 

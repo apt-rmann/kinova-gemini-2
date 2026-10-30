@@ -19,6 +19,7 @@ set(msg_files
 
 set(srv_files
   "srv/ComputeIK.srv"
+  "srv/SetToolLength.srv"
 )
 
 set(action_files

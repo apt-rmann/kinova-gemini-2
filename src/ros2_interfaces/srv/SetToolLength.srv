@@ -1,0 +1,6 @@
+# Request - move the TCP along the tool +Z axis to the tip of an attached tool
+float32 length    # meters past the bare-gripper TCP (0 = bare gripper)
+---
+# Response
+bool success
+string message

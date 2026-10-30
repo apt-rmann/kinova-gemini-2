@@ -1,8 +1,8 @@
 """Attach and detach physical tools from the holster.
 
 The holster sits in front of the arm at the `holster` joint preset. Each slot carries an
-ArUco marker (DICT_4X4_50) whose id maps to a tool name in `config.yaml`'s `holster:`
-block, which the operator maintains by hand.
+ArUco marker (DICT_4X4_50); `config.yaml`'s `tools:` block, which the operator maintains
+by hand, gives each tool's marker id and length.
 
 Both skills run the same fixed sequence, with different tuning:
 
@@ -15,6 +15,10 @@ Both skills run the same fixed sequence, with different tuning:
 
 The numbers below were tuned on hardware with `scratch/holster_test.py`; its steps 1-6
 are `attach` and its steps 8-13 are `detach`.
+
+The sequence is tuned against the bare-gripper TCP. After an attach the TCP moves to the
+tool tip (its `length` in `tools:`), so every later move refers to
+the tip; detach puts the TCP back on the bare gripper before it starts.
 """
 
 from __future__ import annotations
@@ -61,17 +65,30 @@ _attached: str | None = None
 
 
 def holster_names(cfg: dict) -> list:
-    """Tool names from config.yaml's `holster:` block, in config order."""
-    return [str(name) for name in (cfg.get('holster') or {}).values()]
+    """Tool names from config.yaml's `tools:` block, in config order."""
+    return [str(name) for name in (cfg.get('tools') or {})]
+
+
+def _tool(cfg: dict, name: str):
+    """A tool's `tools:` entry ({'marker': id, 'length': m}) by case-insensitive name, or None."""
+    wanted = name.strip().lower()
+    for tool_name, entry in (cfg.get('tools') or {}).items():
+        if str(tool_name).strip().lower() == wanted:
+            return entry
+    return None
+
+
+def tool_length(cfg: dict, name: str) -> float:
+    """How far a holster tool extends the TCP along tool +Z, in meters. Defaults to 0,
+    i.e. the TCP stays on the bare gripper."""
+    entry = _tool(cfg, name)
+    return float(entry.get('length', 0.0)) if entry else 0.0
 
 
 def _marker_id(cfg: dict, name: str):
-    """Marker id for a holster name (case-insensitive), or None."""
-    wanted = name.strip().lower()
-    for marker_id, tool_name in (cfg.get('holster') or {}).items():
-        if str(tool_name).strip().lower() == wanted:
-            return int(marker_id)
-    return None
+    """Marker id of a holster tool's slot, or None."""
+    entry = _tool(cfg, name)
+    return int(entry['marker']) if entry else None
 
 
 async def _sequence(ctx: 'SkillContext', action: str, name: str, marker_id: int,
@@ -169,6 +186,10 @@ async def attach(ctx: 'SkillContext', name: str) -> dict:
                              gripper_start=ATTACH_GRIPPER_START)
     if result['ok']:
         _attached = name
+        # the tool is in hand either way, so _attached stands even if this fails
+        res = await ctx.robot.set_tool_length(tool_length(ctx.cfg, name))
+        if not res.ok:
+            result = _result(res, ctx.robot, step='set the TCP to the tool tip')
     result['attached'] = _attached
     return result
 
@@ -197,6 +218,11 @@ async def detach(ctx: 'SkillContext', name: str) -> dict:
     # process started, e.g. by hand or by a separate skill_cli call
     if _attached is not None and _attached != name:
         return _error(ctx.robot, f'{_attached!r} is attached, not {name!r}')
+
+    # the holster offsets were tuned against the bare-gripper TCP
+    res = await ctx.robot.set_tool_length(0.0)
+    if not res.ok:
+        return _result(res, ctx.robot, step='reset the TCP to the bare gripper')
 
     result = await _sequence(ctx, 'detach', name, marker_id, DETACH_OFFSET_CAM,
                              DETACH_HOVER_Z, DETACH_APPROACH, GRIPPER_OPEN_BY, DETACH_RETREAT)

@@ -9,7 +9,7 @@ then compose these skills into a sequence, choosing their parameters, that achie
 ## What you receive
 
 - An image from the wrist camera after every user message and after every action.
-- A ROBOT line / robot field with the end-effector position (ee) and gripper opening (0 open, 1 closed).
+- A ROBOT line / robot field with the end-effector position (ee) and gripper opening (0 open, 1 closed). While a tool is attached, the robot field also shows `tool_length`, and ee and every move refer to the tip of the tool, not the gripper.
 - Skill results as JSON. Read `ok`, `status`, and `message`.
 
 

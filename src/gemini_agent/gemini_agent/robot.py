@@ -10,6 +10,7 @@ from std_msgs.msg import Empty
 
 from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose
 from ros2_interfaces.msg import RobotState
+from ros2_interfaces.srv import SetToolLength
 
 _STATUS = {
     GoalStatus.STATUS_SUCCEEDED: 'succeeded',
@@ -26,7 +27,7 @@ class ActionResult:
 
 
 class Robot:
-    """Owns the four action clients and the latest RobotState."""
+    """Owns the controller's action and service clients and the latest RobotState."""
 
     def __init__(self, node, cfg):
         self.node = node
@@ -40,6 +41,7 @@ class Robot:
             'move_to_joints': ActionClient(node, MoveToJoints, 'move_to_joints'),
             'move_to_pose': ActionClient(node, MoveToPose, 'move_to_pose'),
         }
+        self._set_tool_length = node.create_client(SetToolLength, 'set_tool_length')
 
         self._state = None
         node.create_subscription(RobotState, ros['state_topic'], self._on_state, 10)
@@ -60,6 +62,8 @@ class Robot:
         for name, client in self._clients.items():
             if not client.wait_for_server(timeout_sec=timeout_sec):
                 missing.append(name)
+        if not self._set_tool_length.wait_for_service(timeout_sec=timeout_sec):
+            missing.append('set_tool_length')
         return missing
 
     def wait_for_state(self, timeout_sec: float = 2.0) -> bool:
@@ -106,6 +110,16 @@ class Robot:
             return ActionResult(False, 'rejected', f'unknown preset {name!r}; known presets: {known}')
         return await self.move_to_joints(angles)
 
+    async def set_tool_length(self, length: float) -> ActionResult:
+        """Move the TCP `length` meters past the bare gripper along tool +Z (0 = bare gripper).
+        Every primitive and the reported pose use the new TCP afterwards. Arm must be still."""
+        if not self._set_tool_length.service_is_ready():
+            return ActionResult(False, 'unavailable', 'service set_tool_length is not available')
+        request = SetToolLength.Request()
+        request.length = float(length)
+        res = await self._await_rclpy_future(self._set_tool_length.call_async(request))
+        return ActionResult(res.success, 'succeeded' if res.success else 'aborted', res.message)
+
     # --- helpers ---
 
     def state(self) -> dict:
@@ -117,6 +131,8 @@ class Robot:
             'ee_xyz': [round(float(s.x), 3), round(float(s.y), 3), round(float(s.z), 3)],
             'gripper': round(float(s.gripper_position), 2),
         }
+        if s.tool_length:  # ee_xyz is the tool tip while a tool is attached
+            out['tool_length'] = round(float(s.tool_length), 3)
         if self._include_theta:
             out['ee_theta_deg'] = [int(round(float(s.theta_x))),
                                    int(round(float(s.theta_y))),
@@ -136,6 +152,12 @@ class Robot:
         if self._state is None:
             return None
         return float(self._state.gripper_position)
+
+    def tool_length(self):
+        """Meters the TCP is extended past the bare gripper, or None if no state yet."""
+        if self._state is None:
+            return None
+        return float(self._state.tool_length)
 
     async def stop(self):
         """Halt the arm in the C++ node, then cancel whatever goals we have open."""

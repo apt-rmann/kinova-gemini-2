@@ -19,6 +19,9 @@ Controller::Controller() : Node("kortex_controller")
     this->declare_parameter("ik_position_tolerance_m", 0.005);
     this->declare_parameter("ik_orientation_tolerance_deg", 2.0);
 
+    // z of the bare gripper's TCP in the Kortex tool configuration; written to the arm at startup
+    this->declare_parameter("bare_tool_z", 0.22);
+
     std::string robot_ip = this->get_parameter("robot_ip").as_string();
     mIKAttempts = std::max(1, static_cast<int>(this->get_parameter("ik_attempts").as_int()));
     mIKPositionTol = this->get_parameter("ik_position_tolerance_m").as_double();
@@ -41,6 +44,17 @@ Controller::Controller() : Node("kortex_controller")
 
     mBase = new k_api::Base::BaseClient(mRouter);
     mBaseCyclic = new k_api::BaseCyclic::BaseCyclicClient(mRouter);
+    mControlConfig = new k_api::ControlConfig::ControlConfigClient(mRouter);
+
+    // --- Tool TCP ---
+    // the tool configuration persists on the arm, so every run starts from the bare gripper.
+    // Mass and center of mass are kept from the robot; only the TCP z is ours.
+    mBareTool = mControlConfig->GetToolConfiguration();
+    mBareTool.mutable_tool_transform()->set_z(static_cast<float>(this->get_parameter("bare_tool_z").as_double()));
+    std::string tool_error;
+    if (!setToolLength(0.0f, tool_error)) {
+        RCLCPP_ERROR(this->get_logger(), "Could not reset the tool TCP at startup: %s", tool_error.c_str());
+    }
 
     // --- Action Servers ---
     this->CommandGripperServer = rclcpp_action::create_server<ros2_interfaces::action::CommandGripper>(
@@ -76,6 +90,8 @@ Controller::Controller() : Node("kortex_controller")
     // --- Service Servers ---
     this->ComputeIKService = this->create_service<ros2_interfaces::srv::ComputeIK>(
         "compute_ik", std::bind(&Controller::handleComputeIK, this, _1, _2));
+    this->SetToolLengthService = this->create_service<ros2_interfaces::srv::SetToolLength>(
+        "set_tool_length", std::bind(&Controller::handleSetToolLength, this, _1, _2));
 
     // --- Publishers ---
     PubState = this->create_publisher<ros2_interfaces::msg::RobotState>("robot_state", 10);
@@ -172,6 +188,7 @@ void Controller::publishState()
         msg.theta_x = cartesian.theta_x(); msg.theta_y = cartesian.theta_y(); msg.theta_z = cartesian.theta_z();
         for (int i = 0; i < 7; ++i) msg.joint_angles[i] = joints.joint_angles(i).value();
         msg.gripper_position = gripper_pos;
+        msg.tool_length = mToolLength;
         PubState->publish(msg);
 
         publishJointStates(joints, gripper_pos);
@@ -469,6 +486,46 @@ void Controller::handleComputeIK(
     if (!response->success) {
         RCLCPP_ERROR(this->get_logger(), "ComputeIK failed: %s", ik_error.c_str());
     }
+}
+
+
+// --- Set Tool Length Service ---
+void Controller::handleSetToolLength(
+    const std::shared_ptr<ros2_interfaces::srv::SetToolLength::Request> request,
+    std::shared_ptr<ros2_interfaces::srv::SetToolLength::Response> response)
+{
+    std::string error;
+    response->success = setToolLength(request->length, error);
+    if (response->success) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "tool length %.3f m", request->length);
+        response->message = msg;
+    } else {
+        RCLCPP_ERROR(this->get_logger(), "SetToolLength failed: %s", error.c_str());
+        response->message = error;
+    }
+}
+
+
+bool Controller::setToolLength(float length, std::string& error_out)
+{
+    // Kortex moves its tool frame immediately, so measured poses, reach_pose actions and
+    // twists all refer to the new TCP from here on. Only call this with the arm still.
+    k_api::ControlConfig::ToolConfiguration tool(mBareTool);
+    tool.mutable_tool_transform()->set_z(mBareTool.tool_transform().z() + length);
+
+    try {
+        std::lock_guard<std::mutex> lock(mApiMutex);
+        mControlConfig->SetToolConfiguration(tool);
+    } catch (std::exception& ex) {
+        error_out = std::string("Kortex error: ") + ex.what();
+        return false;
+    }
+
+    mToolLength = length;
+    RCLCPP_INFO(this->get_logger(), "Tool TCP set %.2f m past the bare gripper (tool z = %.2f m)",
+                length, tool.tool_transform().z());
+    return true;
 }
 
 
