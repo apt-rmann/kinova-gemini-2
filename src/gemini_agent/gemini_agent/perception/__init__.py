@@ -1,4 +1,4 @@
-"""Perception backend for the look tool: names in, base-frame centroids out."""
+"""Perception backend for the look skill: names in, base-frame centroids out."""
 
 import asyncio
 from collections import defaultdict

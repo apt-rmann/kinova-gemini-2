@@ -4,7 +4,7 @@ The holster sits in front of the arm at the `holster` joint preset. Each slot ca
 ArUco marker (DICT_4X4_50) whose id maps to a tool name in `config.yaml`'s `holster:`
 block, which the operator maintains by hand.
 
-Both tools run the same fixed sequence, with different tuning:
+Both skills run the same fixed sequence, with different tuning:
 
     1  move to the `holster` preset (attach also closes the gripper to a known opening)
     2  detect the slot's marker, take `marker center + OFFSET_CAM` as the target point
@@ -25,11 +25,11 @@ import numpy as np
 
 from gemini_agent.perception import aruco
 
-from . import tool
+from . import skill
 from .motion import _error, _result
 
 if TYPE_CHECKING:
-    from . import ToolContext
+    from . import SkillContext
 
 # ---------------------------------------------------------------- TUNING ----
 HOLSTER_PRESET = 'holster'     # preset the holster is visible from, in config.yaml
@@ -74,11 +74,11 @@ def _marker_id(cfg: dict, name: str):
     return None
 
 
-async def _sequence(ctx: 'ToolContext', action: str, name: str, marker_id: int,
+async def _sequence(ctx: 'SkillContext', action: str, name: str, marker_id: int,
                     offset_cam, hover_z: float, approach: float,
                     gripper_delta: float, retreat: float,
                     gripper_start: float = None) -> dict:
-    """The shared six-step holster sequence. -> a tool result dict."""
+    """The shared six-step holster sequence. -> a skill result dict."""
 
     def failed(step: str, res):
         return _result(res, ctx.robot, step=step)
@@ -140,7 +140,7 @@ async def _sequence(ctx: 'ToolContext', action: str, name: str, marker_id: int,
     return _result(res, ctx.robot, tool=name, marker_id=marker_id)
 
 
-@tool(
+@skill(
     name='attach',
     description=('Pick up a physical tool from the holster and attach it to the gripper. Give the '
                  'tool name as it appears on the holster. The arm moves to the holster, finds the '
@@ -154,7 +154,7 @@ async def _sequence(ctx: 'ToolContext', action: str, name: str, marker_id: int,
         'required': ['name'],
     },
 )
-async def attach(ctx: 'ToolContext', name: str) -> dict:
+async def attach(ctx: 'SkillContext', name: str) -> dict:
     global _attached
 
     marker_id = _marker_id(ctx.cfg, name)
@@ -173,7 +173,7 @@ async def attach(ctx: 'ToolContext', name: str) -> dict:
     return result
 
 
-@tool(
+@skill(
     name='detach',
     description=('Return the physical tool currently held by the gripper to its holster slot. '
                  'Give the same tool name that was attached. The arm moves to the holster, finds '
@@ -186,7 +186,7 @@ async def attach(ctx: 'ToolContext', name: str) -> dict:
         'required': ['name'],
     },
 )
-async def detach(ctx: 'ToolContext', name: str) -> dict:
+async def detach(ctx: 'SkillContext', name: str) -> dict:
     global _attached
 
     marker_id = _marker_id(ctx.cfg, name)
@@ -194,7 +194,7 @@ async def detach(ctx: 'ToolContext', name: str) -> dict:
         known = ', '.join(holster_names(ctx.cfg)) or '(the holster is empty)'
         return _error(ctx.robot, f'{name!r} is not on the holster; available: {known}')
     # an unknown state (None) is not an error: the tool may have been attached before this
-    # process started, e.g. by hand or by a separate tool_cli call
+    # process started, e.g. by hand or by a separate skill_cli call
     if _attached is not None and _attached != name:
         return _error(ctx.robot, f'{_attached!r} is attached, not {name!r}')
 

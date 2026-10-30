@@ -20,7 +20,7 @@ setup(
     entry_points={
         'console_scripts': [
             'agent_node = gemini_agent.agent_node:main',
-            'tool_cli = gemini_agent.tool_cli:main',
+            'skill_cli = gemini_agent.skill_cli:main',
         ],
     },
 )

@@ -1,4 +1,4 @@
-"""Gemini Live session: send/receive loops, tool execution, interruption."""
+"""Gemini Live session: send/receive loops, skill execution, interruption."""
 
 import asyncio
 
@@ -10,9 +10,9 @@ class _Reconnect(Exception):
 
 
 class Session:
-    def __init__(self, cfg, tools, ctx):
+    def __init__(self, cfg, skills, ctx):
         self.cfg = cfg
-        self.tools = tools
+        self.skills = skills
         self.ctx = ctx
         self.client = ctx.genai_client
         self.emit = ctx.emit
@@ -21,7 +21,7 @@ class Session:
             self.system_prompt = f.read()
 
         self.instructions = asyncio.Queue()
-        self.tool_task = None
+        self.skill_task = None
         self.send_lock = asyncio.Lock()   # keeps image/text pairs from interleaving
         self.resume_handle = None
         self.interrupt_reason = ''
@@ -35,7 +35,7 @@ class Session:
         config = types.LiveConnectConfig(
             response_modalities=['TEXT'],
             system_instruction=self.system_prompt,
-            tools=[types.Tool(function_declarations=[t['declaration'] for t in self.tools.values()])],
+            tools=[types.Tool(function_declarations=[t['declaration'] for t in self.skills.values()])],
             session_resumption=types.SessionResumptionConfig(handle=self.resume_handle),
         )
 
@@ -64,19 +64,19 @@ class Session:
             except asyncio.CancelledError:
                 raise
             except _Reconnect:
-                await self.cancel_tool('session lost')
+                await self.cancel_skill('session lost')
             except Exception as e:
                 self.emit('error', {'where': 'session', 'message': str(e)})
-                await self.cancel_tool('session lost')
+                await self.cancel_skill('session lost')
                 await asyncio.sleep(2)
 
     async def instruction_loop(self):
         while True:
             text = await self.instructions.get()
 
-            # the interrupted tool's response must be sent before the new user turn,
+            # the interrupted skill's response must be sent before the new user turn,
             # because the model has an open function call
-            await self.cancel_tool('user sent a new message during motion')
+            await self.cancel_skill('user sent a new message during motion')
 
             snapshot = await self.ctx.camera.fresh_snapshot(after=self.ctx.camera.now())
             async with self.send_lock:
@@ -105,16 +105,16 @@ class Session:
     async def _handle(self, msg):
         if msg.tool_call:
             calls = msg.tool_call.function_calls or []
-            if self.tool_task and not self.tool_task.done():
-                # shouldn't happen with blocking tools
+            if self.skill_task and not self.skill_task.done():
+                # shouldn't happen with blocking skills
                 await self.s.send_tool_response(function_responses=[
                     _resp(fc, {'ok': False, 'status': 'rejected',
                                'message': 'another action is running'}) for fc in calls])
             else:
-                self.tool_task = asyncio.create_task(self.run_tools(calls))
+                self.skill_task = asyncio.create_task(self.run_skills(calls))
 
         if msg.tool_call_cancellation:
-            await self.cancel_tool('cancelled by model/server')
+            await self.cancel_skill('cancelled by model/server')
 
         if msg.server_content:
             content = msg.server_content
@@ -139,9 +139,9 @@ class Session:
                                   'time_left': str(msg.go_away.time_left)})
             raise _Reconnect()
 
-    # --- tools ---
+    # --- skills ---
 
-    async def run_tools(self, calls):
+    async def run_skills(self, calls):
         responses, interrupted, image = [], False, None
 
         for fc in calls:
@@ -151,9 +151,9 @@ class Session:
                 continue
 
             args = dict(fc.args or {})
-            self.emit('tool_call', {'id': fc.id, 'name': fc.name, 'args': args})
+            self.emit('skill_call', {'id': fc.id, 'name': fc.name, 'args': args})
             try:
-                result = await self.tools[fc.name]['fn'](self.ctx, **args)
+                result = await self.skills[fc.name]['fn'](self.ctx, **args)
             except asyncio.CancelledError:
                 interrupted = True
                 result = self.ctx.robot.interrupted_result(self.interrupt_reason)
@@ -165,7 +165,7 @@ class Session:
                           'robot': self.ctx.robot.state()}
 
             image = result.pop('_image', image)
-            self.emit('tool_result', {'id': fc.id, 'name': fc.name, 'result': result})
+            self.emit('skill_result', {'id': fc.id, 'name': fc.name, 'result': result})
             responses.append(_resp(fc, result))
 
         async with self.send_lock:
@@ -173,20 +173,20 @@ class Session:
                 snapshot = await self.ctx.camera.fresh_snapshot()
                 rgb = image if image is not None else snapshot.rgb
                 await self.send_image(
-                    rgb, reason='look_annotated' if image is not None else 'post_tool')
+                    rgb, reason='look_annotated' if image is not None else 'post_skill')
             await self.s.send_tool_response(function_responses=responses)
 
-    async def cancel_tool(self, reason: str):
-        if self.tool_task and not self.tool_task.done():
+    async def cancel_skill(self, reason: str):
+        if self.skill_task and not self.skill_task.done():
             self.interrupt_reason = reason
-            self.tool_task.cancel()
-            # its tool response is sent before we continue
-            await asyncio.gather(self.tool_task, return_exceptions=True)
+            self.skill_task.cancel()
+            # its function response is sent before we continue
+            await asyncio.gather(self.skill_task, return_exceptions=True)
 
     def on_stop(self):
         """From /stop. The C++ node has already halted the arm."""
         self.emit('session', {'status': 'stop requested'})
-        asyncio.create_task(self.cancel_tool('stop requested'))
+        asyncio.create_task(self.cancel_skill('stop requested'))
 
     # --- images ---
 

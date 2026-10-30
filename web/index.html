@@ -41,7 +41,7 @@
   button { transition: all .1s ease-in-out; }
   button:active { transform: translateY(1px); }
 
-  .tool pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  .skill pre { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 </style>
 </head>
 
@@ -176,7 +176,7 @@ const CLS = {
   divider: 'self-center w-1/2 border-t border-gray-200 my-1',
   err:     'self-stretch bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-xs font-bold',
   thought: 'self-stretch bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-500 italic',
-  tool:    'self-stretch bg-white border border-gray-200 rounded-lg px-3 py-2 font-mono text-[12px]',
+  skill:   'self-stretch bg-white border border-gray-200 rounded-lg px-3 py-2 font-mono text-[12px]',
   img:     'self-stretch bg-white border border-gray-200 rounded-lg p-2',
 };
 
@@ -323,8 +323,8 @@ function render(type, d) {
       break;
     }
 
-    case 'tool_call': {
-      const card = add(make('div', CLS.tool));
+    case 'skill_call': {
+      const card = add(make('div', CLS.skill));
       card.id = 'call-' + d.id;
       const args = JSON.stringify(d.args || {});
       const head = card.appendChild(make('div', 'name font-bold text-gray-900 break-words'));
@@ -333,9 +333,9 @@ function render(type, d) {
       break;
     }
 
-    case 'tool_result': {
+    case 'skill_result': {
       const r = d.result || {};
-      const card = document.getElementById('call-' + d.id) || add(make('div', CLS.tool));
+      const card = document.getElementById('call-' + d.id) || add(make('div', CLS.skill));
       const status = r.status || (r.ok ? 'ok' : 'failed');
       const tone = r.ok ? 'bg-green-100 text-green-800'
                  : (status === 'interrupted' ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-700');
@@ -359,14 +359,14 @@ function render(type, d) {
         return `${o.id}  [${o.centroid_xyz.join(', ')}]${size ? '  ' + size : ''}`;
       });
       if (d.not_found && d.not_found.length) lines.push('not found: ' + d.not_found.join(', '));
-      const card = add(make('div', CLS.tool));
+      const card = add(make('div', CLS.skill));
       card.appendChild(make('div', 'text-gray-400 font-bold uppercase text-[9px] tracking-widest mb-1', 'look'));
       card.appendChild(make('div', 'whitespace-pre-wrap text-gray-700', lines.join('\n') || 'nothing found'));
       break;
     }
 
     case 'pick': {
-      const card = add(make('div', CLS.tool));
+      const card = add(make('div', CLS.skill));
       card.appendChild(make('div', 'text-gray-400 font-bold uppercase text-[9px] tracking-widest mb-1', 'pick'));
       card.appendChild(make('div', 'text-gray-700',
         `[${(d.target || []).map(v => Number(v).toFixed(3)).join(', ')}]  ` +
@@ -376,7 +376,7 @@ function render(type, d) {
 
     case 'holster': {
       const where = d.found ? `marker ${d.marker_id} found` : `marker ${d.marker_id} NOT found`;
-      const card = add(make('div', CLS.tool));
+      const card = add(make('div', CLS.skill));
       card.appendChild(make('div', 'text-gray-400 font-bold uppercase text-[9px] tracking-widest mb-1', 'holster'));
       card.appendChild(make('div', 'text-gray-700', `${d.action} ${d.tool}: ${where}`));
       break;

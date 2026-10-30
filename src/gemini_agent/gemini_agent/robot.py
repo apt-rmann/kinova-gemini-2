@@ -48,8 +48,8 @@ class Robot:
         # ClientGoalHandle is not hashable, so key active goals by their uuid
         self._active_goals = {}
 
-        # the model only sees orientation when the raw 6-DoF pose tool is enabled
-        self._include_theta = 'move_to_pose' in (cfg.get('tools') or [])
+        # the model only sees orientation when the raw 6-DoF pose skill is enabled
+        self._include_theta = 'move_to_pose' in (cfg.get('skills') or [])
 
     def _on_state(self, msg):
         self._state = msg
@@ -63,7 +63,7 @@ class Robot:
         return missing
 
     def wait_for_state(self, timeout_sec: float = 2.0) -> bool:
-        """Wait for the first RobotState so the first tool call is not a cold read."""
+        """Wait for the first RobotState so the first skill call is not a cold read."""
         deadline = time.monotonic() + timeout_sec
         while self._state is None and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -181,7 +181,7 @@ class Robot:
             res = await self._await_rclpy_future(goal_handle.get_result_async())
             return self._to_action_result(res)
         except asyncio.CancelledError:
-            # stop the arm before the tool unwinds
+            # stop the arm before the skill unwinds
             await asyncio.shield(self._await_rclpy_future(goal_handle.cancel_goal_async()))
             raise
         finally:

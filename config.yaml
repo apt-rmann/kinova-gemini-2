@@ -5,7 +5,7 @@ model:
   system_prompt: prompts/system.md
   context_compression: true      # sliding-window compression for long, image-heavy sessions
 
-tools:                           # enabled tools; comment a line out to remove a tool
+skills:                          # enabled skills; comment a line out to remove a skill
   - look
   - pick
   - move_to

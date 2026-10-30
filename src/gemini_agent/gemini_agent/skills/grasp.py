@@ -1,7 +1,7 @@
-"""The pick macro: preshape, approach, close.
+"""The pick skill: preshape, approach, close.
 
 Closing a fully-open gripper onto an object drags or tips it before the pads meet. This
-tool instead opens the fingers to just wider than the object, drives them around it, and
+skill instead opens the fingers to just wider than the object, drives them around it, and
 then closes to just narrower than it, so the object is captured rather than swept.
 
 The sequence, from the width and depth that `look` reports:
@@ -20,11 +20,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from . import tool
+from . import skill
 from .motion import _error, _result
 
 if TYPE_CHECKING:
-    from . import ToolContext
+    from . import SkillContext
 
 # ---------------------------------------------------------------- TUNING ----
 CLEARANCE_MM = 25.0   # preshape opening = object width + this
@@ -52,7 +52,7 @@ def gripper_for_width(width_mm: float) -> float:
     return float(np.interp(width_mm, GRIPPER_TABLE_MM[::-1], GRIPPER_TABLE_CMD[::-1]))
 
 
-@tool(
+@skill(
     name='pick',
     description=('Grasp an object with the gripper, given the centroid, width and depth that '
                  '`look` reported for it. Opens the fingers wider than the object, moves to it, '
@@ -74,7 +74,7 @@ def gripper_for_width(width_mm: float) -> float:
         'required': ['x', 'y', 'z', 'width_mm', 'depth_mm'],
     },
 )
-async def pick(ctx: 'ToolContext', x: float, y: float, z: float,
+async def pick(ctx: 'SkillContext', x: float, y: float, z: float,
                width_mm: float, depth_mm: float) -> dict:
     width_mm = float(width_mm)
     if width_mm <= 0.0:
