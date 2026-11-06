@@ -19,7 +19,9 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for more details.
 
 - ROS 2 with `realsense2_camera`, `kortex_description`, `robot_state_publisher`, `rosbridge_server`, `web_video_server`, `cv_bridge`, `message_filters`, `tf2_ros`
 - Kinova Kortex C++ API, unpacked into `src/kortex_controller/kortex_api/` (`include/` and `lib/release/libKortexApiCpp.a`; not checked in)
-- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `opencv-python`, `numpy`, `torch`
+- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `opencv-python`, `numpy`, `torch`, `mediapipe`
+- The MediaPipe face landmarker model at `models/face_landmarker.task` (not checked in; used by the `itch` skill):
+  `mkdir -p models && curl -fsSL -o models/face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`
 - A local [SAM2](https://github.com/facebookresearch/sam2) checkout with a checkpoint (path set in `config.yaml` under `perception`)
 - A CUDA GPU (for SAM2) and a Gemini API key
 
@@ -67,6 +69,7 @@ ros2 run gemini_agent skill_cli move_relative '{"dz": 0.03}'
 ros2 run gemini_agent skill_cli look '{"objects": ["red cup"]}'
 ros2 run gemini_agent skill_cli pick '{"x": 0.45, "y": 0.0, "z": 0.1, "width_mm": 60, "depth_mm": 70}'
 ros2 run gemini_agent skill_cli attach '{"name": "fork"}'
+ros2 run gemini_agent skill_cli itch '{"location": "left_cheek"}'
 ```
 
 Ctrl-C cancels the running robot goal.

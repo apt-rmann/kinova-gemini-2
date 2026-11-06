@@ -28,7 +28,7 @@ def skill(name: str, description: str, parameters: dict):
     return wrap
 
 
-from . import grasp, holster, motion, perception  # noqa: E402,F401  (registers skills)
+from . import grasp, holster, itch, motion, perception  # noqa: E402,F401  (registers skills)
 
 
 def load(names: list, cfg: dict) -> dict:

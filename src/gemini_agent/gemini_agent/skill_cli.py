@@ -16,7 +16,7 @@ import time
 
 import rclpy
 from google import genai
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 
 from gemini_agent import skills as skill_registry
@@ -104,7 +104,7 @@ def main():
 
     rclpy.init()
     node = Node('skill_cli')
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()

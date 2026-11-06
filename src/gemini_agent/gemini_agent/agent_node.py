@@ -8,7 +8,7 @@ import time
 
 import rclpy
 from google import genai
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Empty, String
@@ -56,7 +56,7 @@ def main():
     rclpy.init()
     node = AgentNode(cfg)
 
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()

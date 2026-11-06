@@ -22,7 +22,7 @@ import time
 
 import numpy as np
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Empty
 
@@ -90,7 +90,7 @@ def main():
 
     rclpy.init()
     node = Node('servo_test')
-    executor = MultiThreadedExecutor()
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
