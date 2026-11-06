@@ -112,11 +112,13 @@ public class MainActivity extends AppCompatActivity
     private ImageButton sendMessage;
     private WebView frameView;
     private ImageButton settingsButton;
+    private ImageButton robotButton;
     private Button connectButton;
 
     private KitLink kit;
     private AppSettings settings;
     private ActivityResultLauncher<Intent> settingsLauncher;
+    private ActivityResultLauncher<Intent> robotLauncher;
     private ActivityResultLauncher<String[]> permissionLauncher;
 
     private String connectedHost;
@@ -139,6 +141,7 @@ public class MainActivity extends AppCompatActivity
         messageBox      = findViewById(R.id.et_message_box);
         sendMessage     = findViewById(R.id.btn_send_message);
         settingsButton  = findViewById(R.id.settingsButton);
+        robotButton     = findViewById(R.id.robotButton);
         connectButton   = findViewById(R.id.connectButton);
         frameView       = findViewById(R.id.frameView);
 
@@ -166,6 +169,10 @@ public class MainActivity extends AppCompatActivity
         settingsLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> onSettingsClosed());
+
+        robotLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> onRobotClosed());
 
         permissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestMultiplePermissions(),
@@ -224,6 +231,7 @@ public class MainActivity extends AppCompatActivity
         settingsButton.setOnClickListener(v ->
                 settingsLauncher.launch(new Intent(this, SettingsActivity.class)));
         connectButton.setOnClickListener(v -> connectToKit());
+        robotButton.setOnClickListener(v -> robotLauncher.launch(new Intent(this, RobotActivity.class)));
 
         frameView.setVisibility((!settings.isBle() & !settings.isBluetooth()) ? VISIBLE : GONE);
 
@@ -619,6 +627,10 @@ public class MainActivity extends AppCompatActivity
             }
 
         });
+    }
+
+    private void onRobotClosed() {
+
     }
 
     private void onSettingsClosed() {

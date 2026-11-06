@@ -21,6 +21,8 @@ RFCOMM_CHANNEL = 1
 AF_BLUETOOTH = 31
 BTPROTO_RFCOMM = 3
 
+CONFIG_PREFIX = "CONFIG "
+
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
 class _SockaddrRC(ctypes.Structure):
@@ -84,6 +86,7 @@ class BluetoothInterfaceNode(Node):
     def __init__(self):
         super().__init__('bluetooth_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
+        self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
 
         self.client_conn = None
@@ -135,7 +138,7 @@ class BluetoothInterfaceNode(Node):
                         line, _, buf = buf.partition(b"\n")
                         instruction = line.decode("utf-8", errors="replace").strip()
                         if instruction:
-                            self.publish_instruction(instruction)
+                            self.handle_line(instruction)
             except OSError as e: 
                 self.get_logger().warn(f'Connection ended: {e}')
             finally:
@@ -180,11 +183,20 @@ class BluetoothInterfaceNode(Node):
             self.queue_message(b'\x02', (ev['data']['text'] + "\n").encode("utf-8"), timeData)
         elif ev['type'] == 'model_thought':
             self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'config':
+            self.queue_message(b'\x02', (ev['data'].encode("utf-8") + "\n").encode("utf-8"), timeData)
     
     def queue_message(self, packet_type, payload, timeData):
         with self._out_cv:
             self._text_q.append((packet_type, payload, timeData))
             self._out_cv.notify()
+
+    def handle_line(self, line):
+        if line.startswith(CONFIG_PREFIX):
+            payload = line[len(CONFIG_PREFIX):].strip()
+            self.config_publisher.publish(String(data=payload))
+        else:
+            self.publish_instruction(line)
 
     def publish_instruction(self, instruction):
         msg = String()

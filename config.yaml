@@ -54,6 +54,7 @@ camera:
 
 ros:
   instruction_topic: /user_instructions
+  config_topic: /config_update
   stop_topic: /stop
   state_topic: /robot_state
   events_topic: /agent/events

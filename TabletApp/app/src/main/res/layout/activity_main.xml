@@ -23,9 +23,17 @@
         <ImageView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="0.5"
+            android:layout_weight="0.1"
             android:scaleType="fitStart"
             ></ImageView>
+
+        <ImageButton
+            android:id="@+id/robotButton"
+            android:layout_width="70dp"
+            android:layout_height="70dp"
+            android:scaleType="fitCenter"
+            android:backgroundTint="@color/white"
+            android:src="@drawable/robot"/>
 
         <ImageButton
             android:id="@+id/settingsButton"

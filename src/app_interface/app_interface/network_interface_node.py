@@ -7,8 +7,10 @@ import socket
 import struct
 import threading
 import json
+import time
 
 LISTEN_PORT = 9100
+CONFIG_PREFIX = "CONFIG "
 
 class NetworkInterfaceNode(Node):
     """
@@ -23,6 +25,7 @@ class NetworkInterfaceNode(Node):
     def __init__(self):
         super().__init__('network_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
+        self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
         self.create_subscription(CompressedImage, '/agent/model_image', self.image_callback, 10)
         self.get_logger().info('Network Interface Node listening...')
@@ -58,7 +61,7 @@ class NetworkInterfaceNode(Node):
                         line, _, buf = buf.partition(b"\n")
                         instruction = line.decode("utf-8", errors="replace").strip()
                         if instruction:
-                            self.publish_instruction(instruction)
+                            self.handle_line(instruction)
             except OSError as e: 
                 self.get_logger().warn(f'Connection ended: {e}')
             finally:
@@ -71,8 +74,12 @@ class NetworkInterfaceNode(Node):
 
     def status_callback(self, msg):
         ev = json.loads(msg.data)
+        t_recv = time.time()
+        timeData = {'time_ev': ev['t'], 'time_node_rec': t_recv}
         if ev['type'] == 'model_text': 
             self.send_to_tablet(ev['data']['text'])
+        if ev['type'] == 'config':
+            self.queue_message(b'\x02', (ev['data'].encode("utf-8") + "\n").encode("utf-8"), timeData)
 
     def image_callback(self, img):
         self.send_image_to_tablet(bytes(img.data))

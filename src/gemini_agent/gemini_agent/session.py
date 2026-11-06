@@ -8,6 +8,8 @@ from google.genai import types
 class _Reconnect(Exception):
     """The server asked us to reconnect."""
 
+class _Reconfigure(Exception):
+    """The config changed. Reload"""
 
 class Session:
     def __init__(self, cfg, tools, ctx):
@@ -27,6 +29,11 @@ class Session:
         self.interrupt_reason = ''
         self.s = None
         self._image_n = 0
+
+        self._reconfigure = asyncio.Event()
+        self._turn_open = False
+        self._turn_sent = False
+        self._resume = False
 
     # --- configuration ---
 
@@ -51,40 +58,85 @@ class Session:
 
         return config
 
+    async def reconfigure_watch_loop(self):
+        await self._reconfigure.wait()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 30 #wait 30s for the robot to go idle before reconfiguring & reconnecting
+        while loop.time() < deadline and (self._turn_open or (self.tool_task is not None and not self.tool_task.done())):
+            await asyncio.sleep(0.1)
+        raise _Reconfigure()
+
+    def request_reconfigure(self):
+        self._reconfigure.set()
+
     # --- main loop ---
 
     async def run(self):
         while True:
+            self._reconfigure.clear()
+            self._turn_open = False
             try:
                 async with self.client.aio.live.connect(
                         model=self.cfg['model']['name'], config=self.live_config()) as s:
                     self.s = s
                     self.emit('session', {'status': 'connected'})
-                    await asyncio.gather(self.instruction_loop(), self.receive_loop())
+                    await self._run_connection()
             except asyncio.CancelledError:
                 raise
+            except _Reconfigure:
+                await self.cancel_tool('updating config')
+                self.emit('session', {'status': 'reconnecting', 'reason': 'config updated'})
+                self._resume = True
             except _Reconnect:
                 await self.cancel_tool('session lost')
             except Exception as e:
                 self.emit('error', {'where': 'session', 'message': str(e)})
                 await self.cancel_tool('session lost')
+                if self._resume:
+                    self.resume_handle = None
+                    self._resume = False
+                    self.emit('session', {'status': 'resume failed'})
                 await asyncio.sleep(2)
+
+    async def _run_connection(self):
+        tasks = [asyncio.ensure_future(c) for c in (self.instruction_loop(), self.receive_loop(), self.reconfigure_watch_loop())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for t in done:
+            if not t.cancelled() and t.exception is not None:
+                raise t.exception()
 
     async def instruction_loop(self):
         while True:
             text = await self.instructions.get()
 
-            # the interrupted tool's response must be sent before the new user turn,
-            # because the model has an open function call
-            await self.cancel_tool('user sent a new message during motion')
+            try:
 
-            snapshot = await self.ctx.camera.fresh_snapshot(after=self.ctx.camera.now())
-            async with self.send_lock:
-                await self.send_image(snapshot.rgb, reason='user_turn')
-                await self.s.send_client_content(
-                    turns=types.Content(role='user', parts=[types.Part(text=self._user_text(text))]),
-                    turn_complete=True)
-            self.emit('user_text', {'text': text})
+                self._turn_sent = False
+
+                # the interrupted tool's response must be sent before the new user turn,
+                # because the model has an open function call
+                await self.cancel_tool('user sent a new message during motion')
+
+                snapshot = await self.ctx.camera.fresh_snapshot(after=self.ctx.camera.now())
+                async with self.send_lock:
+                    await self.send_image(snapshot.rgb, reason='user_turn')
+                    await self.s.send_client_content(
+                        turns=types.Content(role='user', parts=[types.Part(text=self._user_text(text))]),
+                        turn_complete=True)
+                    self._turn_sent = True
+                    self._turn_open = True
+                self.emit('user_text', {'text': text})
+
+            #connection torn down by reconfig before turn goes out, save the instruction
+            except asyncio.CancelledError:
+                if not self._turn_sent:
+                    self.instructions.put_nowait(text)
+                raise
 
     def _user_text(self, text: str) -> str:
         state = self.ctx.robot.state()
@@ -103,6 +155,7 @@ class Session:
                 await self._handle(msg)
 
     async def _handle(self, msg):
+        self._resume = False
         if msg.tool_call:
             calls = msg.tool_call.function_calls or []
             if self.tool_task and not self.tool_task.done():
@@ -127,6 +180,7 @@ class Session:
                 # this model streams its text here, not as model_turn parts
                 self.emit('model_text', {'text': content.output_transcription.text})
             if content.turn_complete:
+                self._turn_open = False
                 self.emit('turn_complete', {})
             if content.interrupted:
                 self.emit('interrupted', {})
@@ -175,6 +229,7 @@ class Session:
                 await self.send_image(
                     rgb, reason='look_annotated' if image is not None else 'post_tool')
             await self.s.send_tool_response(function_responses=responses)
+            self._turn_open = True
 
     async def cancel_tool(self, reason: str):
         if self.tool_task and not self.tool_task.done():
