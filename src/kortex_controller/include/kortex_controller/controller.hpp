@@ -4,12 +4,14 @@
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <std_msgs/msg/float64_multi_array.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 
 
 // Kortex API
 #include <BaseClientRpc.h>
 #include <BaseCyclicClientRpc.h>
+#include <ControlConfigClientRpc.h>
 #include <SessionManager.h>
 #include <RouterClient.h>
 #include <TransportClientTcp.h>
@@ -34,6 +36,7 @@
 #include "ros2_interfaces/action/servo_to_target.hpp"
 #include "ros2_interfaces/msg/robot_state.hpp"
 #include "ros2_interfaces/srv/compute_ik.hpp"
+#include "ros2_interfaces/srv/set_tool_length.hpp"
 
 
 
@@ -66,9 +69,15 @@ private:
     k_api::RouterClient* mRouter;
     k_api::Base::BaseClient* mBase;
     k_api::BaseCyclic::BaseCyclicClient* mBaseCyclic;
+    k_api::ControlConfig::ControlConfigClient* mControlConfig;
 
     // Mutex for thread-safe API access
     std::mutex mApiMutex;
+
+    // Kortex tool configuration of the bare gripper (read at startup); an attached tool
+    // only adds its length to this transform's z, so mass and center of mass are untouched
+    k_api::ControlConfig::ToolConfiguration mBareTool;
+    std::atomic<float> mToolLength{0.0f};   // meters past the bare-gripper TCP along tool +Z
 
     // set by the /stop subscriber, checked by every motion polling loop
     std::atomic<bool> mStopRequested{false};
@@ -82,6 +91,7 @@ private:
 
     // Services
     rclcpp::Service<ros2_interfaces::srv::ComputeIK>::SharedPtr ComputeIKService;
+    rclcpp::Service<ros2_interfaces::srv::SetToolLength>::SharedPtr SetToolLengthService;
 
     // Publishers and Timers
     rclcpp::Publisher<ros2_interfaces::msg::RobotState>::SharedPtr PubState;
@@ -91,6 +101,20 @@ private:
     // Subscribers
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr SubStop;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr SubJointVelocity;
+    rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr SubServoVector;
+
+    // latest /servo_vector (TCP -> target, base frame), counted so ServoToTarget can tell new from repeated
+    std::mutex mServoMutex;
+    double mServoVector[3]{0.0, 0.0, 0.0};
+    uint64_t mServoSeq{0};
+    std::chrono::steady_clock::time_point mServoStamp;
+
+    // ServoToTarget PD gains and limits
+    double mServoKp{1.0};               // 1/s
+    double mServoKd{0.0};               // s
+    double mServoMaxSpeed{0.10};        // m/s
+    double mServoVectorTimeout{0.5};    // s without a new vector before the arm is stopped
+    double mServoTimeout{60.0};         // s for the whole goal
 
     // finger_joint upper limit in the URDF: 0 rad open, 0.7 rad fully closed
     static constexpr double FINGER_JOINT_CLOSED_RAD = 0.7;
@@ -106,6 +130,7 @@ private:
     void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
     void handleStop(const std_msgs::msg::Empty::SharedPtr);
     void handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr);
+    void handleServoVector(const geometry_msgs::msg::Vector3Stamped::SharedPtr);
     float get_gripper_position();
 
     // Action Execution Functions
@@ -140,6 +165,12 @@ private:
     void handleComputeIK(
         const std::shared_ptr<ros2_interfaces::srv::ComputeIK::Request> request,
         std::shared_ptr<ros2_interfaces::srv::ComputeIK::Response> response);
+    void handleSetToolLength(
+        const std::shared_ptr<ros2_interfaces::srv::SetToolLength::Request> request,
+        std::shared_ptr<ros2_interfaces::srv::SetToolLength::Response> response);
+
+    // Tool TCP
+    bool setToolLength(float length, std::string& error_out);
 
     // Motion Helpers
     bool solveIK(const k_api::Base::Pose& target, k_api::Base::JointAngles& ik_solution_out, std::string& error_out);

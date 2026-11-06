@@ -5,11 +5,13 @@ import time
 from dataclasses import dataclass
 
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Vector3Stamped
 from rclpy.action import ActionClient
 from std_msgs.msg import Empty
 
-from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose
+from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose, ServoToTarget
 from ros2_interfaces.msg import RobotState
+from ros2_interfaces.srv import SetToolLength
 
 _STATUS = {
     GoalStatus.STATUS_SUCCEEDED: 'succeeded',
@@ -26,7 +28,7 @@ class ActionResult:
 
 
 class Robot:
-    """Owns the four action clients and the latest RobotState."""
+    """Owns the controller's action and service clients and the latest RobotState."""
 
     def __init__(self, node, cfg):
         self.node = node
@@ -39,7 +41,10 @@ class Robot:
             'move_straight': ActionClient(node, MoveStraight, 'move_straight'),
             'move_to_joints': ActionClient(node, MoveToJoints, 'move_to_joints'),
             'move_to_pose': ActionClient(node, MoveToPose, 'move_to_pose'),
+            'servo_to_target': ActionClient(node, ServoToTarget, 'servo_to_target'),
         }
+        self._set_tool_length = node.create_client(SetToolLength, 'set_tool_length')
+        self._servo_pub = node.create_publisher(Vector3Stamped, '/servo_vector', 10)
 
         self._state = None
         node.create_subscription(RobotState, ros['state_topic'], self._on_state, 10)
@@ -48,8 +53,8 @@ class Robot:
         # ClientGoalHandle is not hashable, so key active goals by their uuid
         self._active_goals = {}
 
-        # the model only sees orientation when the raw 6-DoF pose tool is enabled
-        self._include_theta = 'move_to_pose' in (cfg.get('tools') or [])
+        # the model only sees orientation when the raw 6-DoF pose skill is enabled
+        self._include_theta = 'move_to_pose' in (cfg.get('skills') or [])
 
     def _on_state(self, msg):
         self._state = msg
@@ -60,10 +65,12 @@ class Robot:
         for name, client in self._clients.items():
             if not client.wait_for_server(timeout_sec=timeout_sec):
                 missing.append(name)
+        if not self._set_tool_length.wait_for_service(timeout_sec=timeout_sec):
+            missing.append('set_tool_length')
         return missing
 
     def wait_for_state(self, timeout_sec: float = 2.0) -> bool:
-        """Wait for the first RobotState so the first tool call is not a cold read."""
+        """Wait for the first RobotState so the first skill call is not a cold read."""
         deadline = time.monotonic() + timeout_sec
         while self._state is None and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -106,6 +113,32 @@ class Robot:
             return ActionResult(False, 'rejected', f'unknown preset {name!r}; known presets: {known}')
         return await self.move_to_joints(angles)
 
+    async def servo_to_target(self, stop_distance: float) -> ActionResult:
+        """Twist-servo the TCP along the vectors streamed with publish_servo_vector() until one is
+        shorter than stop_distance (m). Keep publishing while this runs: the controller stops
+        the arm if the stream goes quiet."""
+        goal = ServoToTarget.Goal()
+        goal.stop_distance = float(stop_distance)
+        return await self._send_goal('servo_to_target', goal)
+
+    def publish_servo_vector(self, vector):
+        """Vector from the TCP to the target, base frame, meters."""
+        msg = Vector3Stamped()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.header.frame_id = self.cfg['camera']['base_frame']
+        msg.vector.x, msg.vector.y, msg.vector.z = (float(c) for c in vector)
+        self._servo_pub.publish(msg)
+
+    async def set_tool_length(self, length: float) -> ActionResult:
+        """Move the TCP `length` meters past the bare gripper along tool +Z (0 = bare gripper).
+        Every primitive and the reported pose use the new TCP afterwards. Arm must be still."""
+        if not self._set_tool_length.service_is_ready():
+            return ActionResult(False, 'unavailable', 'service set_tool_length is not available')
+        request = SetToolLength.Request()
+        request.length = float(length)
+        res = await self._await_rclpy_future(self._set_tool_length.call_async(request))
+        return ActionResult(res.success, 'succeeded' if res.success else 'aborted', res.message)
+
     # --- helpers ---
 
     def state(self) -> dict:
@@ -117,6 +150,8 @@ class Robot:
             'ee_xyz': [round(float(s.x), 3), round(float(s.y), 3), round(float(s.z), 3)],
             'gripper': round(float(s.gripper_position), 2),
         }
+        if s.tool_length:  # ee_xyz is the tool tip while a tool is attached
+            out['tool_length'] = round(float(s.tool_length), 3)
         if self._include_theta:
             out['ee_theta_deg'] = [int(round(float(s.theta_x))),
                                    int(round(float(s.theta_y))),
@@ -136,6 +171,12 @@ class Robot:
         if self._state is None:
             return None
         return float(self._state.gripper_position)
+
+    def tool_length(self):
+        """Meters the TCP is extended past the bare gripper, or None if no state yet."""
+        if self._state is None:
+            return None
+        return float(self._state.tool_length)
 
     async def stop(self):
         """Halt the arm in the C++ node, then cancel whatever goals we have open."""
@@ -181,7 +222,7 @@ class Robot:
             res = await self._await_rclpy_future(goal_handle.get_result_async())
             return self._to_action_result(res)
         except asyncio.CancelledError:
-            # stop the arm before the tool unwinds
+            # stop the arm before the skill unwinds
             await asyncio.shield(self._await_rclpy_future(goal_handle.cancel_goal_async()))
             raise
         finally:

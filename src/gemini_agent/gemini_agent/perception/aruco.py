@@ -1,6 +1,6 @@
 """ArUco detection: a marker id and a snapshot in, a base-frame point out.
 
-Used by the holster tools to find the tool holder. Points are deprojected and
+Used by the holster skills to find the tool holder. Points are deprojected and
 transformed exactly the way `localize.measure` does, so they are directly
 comparable with `look` results.
 """

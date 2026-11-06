@@ -1,222 +1,150 @@
 # Architecture
 
-This repo turns natural-language instructions into motion on a Kinova Gen3 arm with a Robotiq 2F-140 gripper and a wrist-mounted RealSense. It is a ROS 2 colcon workspace split into three layers:
+We use a vision-language model (VLM) to compose a library of robot skills to complete a user-defined task. Our repo follows the **primitive → skill → task** framework from [Pedersen et al.](https://www.sciencedirect.com/science/article/pii/S0736584515000575)
 
-1. **Robot layer** (C++): `kortex_controller` owns the connection to the arm and exposes a few motion primitives as ROS 2 actions.
-2. **Agent layer** (Python): `gemini_agent` runs a Gemini Live session, gives the model camera images and robot state, and turns its function calls into action goals.
-3. **User layer**: the browser UI (`web/index.html`) and the phone-app transports (`app_interface`) that feed instructions in and show what the agent is doing.
-
-All three layers talk only over ROS 2 topics and actions, so each can be run, restarted, or replaced on its own.
-
-## System diagram
+## Framework
 
 ```
-  Browser (web/index.html)        Phone app
-        │  rosbridge :9090             │  BLE / RFCOMM / TCP :9100
-        │                              ▼
-        │                     app_interface node
-        │                              │
-        ├──────── /user_instructions ◄─┘      (std_msgs/String)
-        ├──────── /stop                       (std_msgs/Empty)
-        ◄──────── /agent/events               (JSON in std_msgs/String)
-        ◄──────── /agent/model_image          (CompressedImage)
-        ◄──────── /robot_state
-        │
-        ▼
-  gemini_agent (agent_node) ◄────────► Gemini Live API (streaming)
-   ├─ Session      : live connection, turn handling, interruption
-   ├─ tools/       : look, pick, move_to, move_relative, move_straight, ...
-   ├─ perception/  : Gemini detector ─► SAM2 masks ─► depth + TF ─► base-frame xyz
-   ├─ Camera       : synced color/depth + intrinsics + TF snapshots
-   └─ Robot        : action clients + latest RobotState
-        │  actions: move_to_pose, move_to_joints, move_straight, command_gripper
-        │  topics : /stop, /robot_state
-        ▼
-  kortex_controller (C++) ───── Kortex TCP ─────► Kinova Gen3
-        │  publishes /robot_state, /joint_states
-        ▼
-  robot_state_publisher ─► TF (base_link … camera_link ─► physical_realsense_link)
-  realsense2_camera     ─► /camera/realsense/{color, aligned_depth_to_color}/...
+                    ┌──────────────────────────────┐
+   User ──────────► │  TASK      "put the toy in   │   what the user wants done
+                    │             the box"         │
+                    └──────────────┬───────────────┘
+                                   │  composed at runtime by the
+                                   │  Gemini Live session
+                    ┌──────────────▼───────────────┐
+                    │  SKILLS    look · pick ·     │   parameterized, object-centered
+                    │  move_to · attach · ...      │   abilities
+                    └──────────────┬───────────────┘
+                                   │  each skill is a fixed composition of
+                    ┌──────────────▼───────────────┐
+                    │  PRIMITIVES  MoveToPose ·    │   single robot operations
+                    │  MoveStraight · Gripper ·... │   (ROS 2 actions)
+                    └──────────────────────────────┘
 ```
 
-## Packages
+| Layer | What it is here |
+|---|---|
+| **Primitive** | One ROS 2 action on the controller: a single, atomic robot operation that reports `success` and `message` |
+| **Skill** | An async Python function that combines primitives (and sensing) into one ability with a few intuitive parameters, and reports what happened |
+| **Task** | Whatever the user asks for. Not written ahead of time; it exists only as the sequence of parameterized skill calls the operator chooses |
+| **Operator** | The Gemini Live model. It reads the request, looks at the camera image and robot state, picks skills, fills in their parameters, and checks the result after each one |
 
-### `ros2_interfaces`: the robot API
 
-The contract between the robot layer and everything above it.
+## Primitives
 
-| Interface | Kind | Purpose |
+Primitives are ROS2 actions in `kortex_controller`, a C++ node that holds the Kortex connection to the arm and moves the arm using the Kortex API. 
+
+| Primitive | Kind | Does |
 |---|---|---|
-| `MoveToPose` | action | Move the end effector to a 6-DoF pose (m, Kortex extrinsic XYZ Euler degrees) |
-| `MoveToJoints` | action | Move to a 7-joint configuration (degrees) |
-| `MoveStraight` | action | Move a distance along the tool's own Z axis (+ forward, − back) |
-| `CommandGripper` | action | Set the gripper, 0 = open to 1 = closed |
-| `ServoToTarget` | action | Visual servoing toward a moving target on `/servo_vector` (declared, not implemented) |
-| `ComputeIK` | service | Pose to joint solution |
-| `RobotState` | msg | Cartesian pose, 7 joint angles, gripper position |
+| `MoveToPose` | action | Move the end effector to a 6-DoF pose (IK, then a joint-space move) |
+| `MoveToJoints` | action | Move to a 7-joint configuration |
+| `MoveStraight` | action | Move a distance along the gripper's own Z axis (+ forward, − back) |
+| `CommandGripper` | action | Set the gripper opening, 0 = open to 1 = closed |
+| `ServoToTarget` | action | Uses Twist commands to drive the TCP towards a target location` |
+| `SetToolLength` | service | Move the TCP a distance along tool +Z past the bare gripper, to the tip of an attached tool |
+| `/stop` | topic | Halt the arm immediately and abort any running primitive |
+| `/robot_state` | topic | Current pose, joint angles, gripper position, tool length |
 
-Every action result carries `success` and `message`, which the agent passes straight through to the model.
+**Tool TCP.** The TCP is the Kortex tool frame, so every primitive and the reported pose follow it with no per-primitive code. The controller writes the bare-gripper TCP (`bare_tool_z`, 0.22 m) to the arm at startup. `attach` then extends it by the tool's hand-measured `length` in `config.yaml`'s `tools:` block (which also gives each tool's holster marker id), and `detach` resets it to the bare gripper before seating the tool.
 
-### `kortex_controller`: the robot layer
+`ComputeIK` (service) is declared but not used by any skill yet.
 
-One `rclcpp::Node` (`src/kortex_controller/src/controller.cpp`) that opens a Kortex TCP session to the arm and hosts the action servers above, the `compute_ik` service, and a 50 ms timer that publishes state.
+Primitives don't know about objects, tasks, or the model. They can be tested on their own with `ros2 action send_goal`, and any skill can use them.
 
-**Concurrency.** Every Kortex call goes through one mutex, `mApiMutex`. Each accepted goal runs on its own detached thread and polls the arm until it arrives, times out, is canceled, or is stopped. The state timer also takes the mutex.
+## Skills
 
-**Motion primitives.**
-- `MoveToPose` solves IK with Kortex, then executes the result as a joint-space move. The solver is deterministic per seed, so `solveIK` runs it `ik_attempts` times (default 50: once from the measured joint angles, then from random seeds), discards duplicate branches, and sorts the rest by total joint travel from the current configuration. Candidates are confirmed with forward kinematics cheapest-first (`ik_position_tolerance_m`, `ik_orientation_tolerance_deg`), and the first that reaches the target wins. A joint-space move gives smoother motion than a Cartesian move and keeps the orientation.
-- `MoveToJoints` polls joint angles until all are within 1°, handling 360° wraparound, with a 30 s timeout.
-- `MoveStraight` computes the tool Z axis in the base frame from the reported Euler angles (`toolZAxis` / `shiftAlongToolZ`), sends a Cartesian target, and polls with `pollUntilCartesianTarget` (1 cm tolerance, 5 s timeout).
-- `CommandGripper` sends a position command. Reaching the numeric target is not required for success, because the gripper can stop against a grasped object before it gets there.
+A skill is one decorated async function in `src/gemini_agent/gemini_agent/skills/`:
 
-**Stopping.** A message on `/stop` calls `Base::Stop()` right away (under the mutex) and sets `mStopRequested`, which every polling loop checks. Accepting a new goal clears the flag.
+```python
+@skill(name='pick', description='...', parameters={...JSON schema...})
+async def pick(ctx: SkillContext, x, y, z, width_mm, depth_mm) -> dict:
+    ...
+```
 
-**State outputs.**
-- `/robot_state` (`RobotState`) is what the agent and the UI read.
-- `/joint_states` (`sensor_msgs/JointState`, radians, plus `finger_joint` = gripper × 0.7) lets `robot_state_publisher` build the TF chain through the arm. Without it, TF splits into two trees and camera-to-base projection fails.
+- The **declaration** (name, description, parameter schema) is what the operator sees. It is sent to Gemini as a function declaration.
+- The **body** calls primitives through `ctx.robot` and sensing through `ctx.camera` and the perception pipeline.
+- The **result** is a dict with `ok`, `status`, an optional `message`, and a `robot` state snapshot. Keys that start with `_` (such as `_image`) are kept out of what the model sees.
 
-### `gemini_agent`: the agent layer
+`config.yaml`'s `skills:` list chooses which skills the operator is offered. `skill_cli` runs any skill from the terminal without the model, which is how skills are tested on hardware.
 
-A Python package with two entry points: `agent_node` (the live agent) and `tool_cli` (runs one tool from the terminal, without the model).
 
-#### Threading model
+### Skill library
 
-`agent_node.main()` splits the work across two threads:
+| Skill | Primitives it composes | Purpose |
+|---|---|---|
+| `look(objects)` | camera snapshot → Gemini detector → SAM2 → depth + TF | Finds named objects and returns their base-frame centroids, grasp width, and estimated depth, plus an annotated image |
+| `pick(x, y, z, width_mm, depth_mm)` | `CommandGripper` → `MoveToPose` → `MoveStraight` → `CommandGripper` | Opens just wider than the object, moves to it, advances to its middle, and closes onto it |
+| `attach(name)` / `detach(name)` | `MoveToJoints` → (`CommandGripper`) → ArUco detection → `MoveToPose` → `MoveStraight` → `CommandGripper` → `MoveStraight` | Takes a physical tool from its holster slot, or returns it |
+| `move_to(x, y, z)` | `MoveToPose` | Moves to a base-frame point, keeping the current orientation |
+| `move_relative(dx, dy, dz)` | `MoveToPose` | Same, relative to the current position |
+| `move_straight(distance)` | `MoveStraight` | Moves along the gripper axis |
+| `set_gripper(position)` | `CommandGripper` | Opens or closes the gripper |
+| `go_to_preset(name)` | `MoveToJoints` | Moves to a named joint configuration from `config.yaml` |
+| `stop()` | `/stop` | Halts the arm |
+| `move_to_pose(...)` | `MoveToPose` | Raw 6-DoF pose (off by default) |
 
-- A background thread spins a `MultiThreadedExecutor` for all ROS I/O: subscriptions, action client futures, and TF.
-- The main thread runs an `asyncio` event loop for the Gemini session and tool execution.
+Some skills wrap a single primitive. They give the model a way to fill gaps between the larger skills (lifting after a grasp, releasing over a target). 
 
-ROS callbacks never touch asyncio objects directly. They hand work over with `loop.call_soon_threadsafe`, and `Robot._await_rclpy_future` bridges rclpy futures into asyncio futures. Blocking work (the Gemini detector call, SAM2 inference) runs in `asyncio.to_thread`.
+Some implementation notes on the larger skills:
 
-SAM2 is loaded with `segmenter.preload()` **before** `rclpy.init()`. Once the camera subscriptions are live, they hold the GIL often enough that importing torch goes from seconds to minutes.
+## Tasks
 
-#### Modules
+A task is whatever the user asks for during the session:
 
-| Module | Responsibility |
+```
+ user ──"put the toy in the box"──► Session ──image + "USER: … ROBOT: ee=… gripper=…"──► Gemini
+                                                                                      │
+                     ┌───────────────── plan, then function calls ◄───────────────────┘
+                     ▼
+              run each skill ──► primitives on the arm
+                     │
+                     └──► skill results + fresh image ──► Gemini checks, then calls next skill … done
+```
+
+For example, the operator might turn *"put the toy in the box"* into:
+
+| Skill call | Parameters come from |
 |---|---|
-| `config.py` | Finds `config.yaml` (`$KINOVA_GEMINI_CONFIG`, else by walking up from the package to the repo root), loads `.env`, resolves the system prompt path |
-| `robot.py` | `Robot`: one action client per primitive, latest `RobotState`, `stop()`, and a compact `state()` dict the model sees after every action |
-| `camera.py` | `Camera`: approximately time-synced color/depth pairs, intrinsics, and `base_frame ← projection_frame` TF. `fresh_snapshot(after=t)` waits for a frame newer than `t`, so post-motion images are never stale |
-| `session.py` | `Session`: the Gemini Live connection and the core loop (below) |
-| `tools/` | Tool registry and the tool implementations |
-| `perception/` | Pipeline behind the `look` tool, plus `aruco.py` for the holster markers |
-| `agent_node.py` | Wires everything together and publishes UI events and images |
-| `tool_cli.py` | Same wiring, but runs one tool and prints its JSON result |
+| `look(["toy", "box"])` | the user's words |
+| `pick(X1, Y1, Z1, w1, d1)` | `look`'s result for the toy |
+| `move_to(X1, Y1, Z1 + 0.15)` | the toy's position, raised |
+| `move_to(X2, Y2, Z1 + 0.15)` | the box's X/Y at the same safe height |
+| `set_gripper(0.0)` | — |
 
-#### Session loop
+`Session` (`session.py`) runs this loop over a Gemini Live connection:
 
-`Session.run()` connects to the Live API (text responses, optional thinking, sliding-window context compression, session resumption) and runs two coroutines side by side:
+- **User turn.** Each instruction is sent with a fresh camera image and a one-line robot state.
+- **Skill batch.** The model's function calls run in order. Afterwards it receives one image (the annotated `look` image if there is one, otherwise a fresh frame) and the results. 
+- **Interruption.** A new user message or `/stop` cancels the running skill. Its primitive goal is canceled, the skill reports `status: "interrupted"` (any later calls in the batch report `"skipped"`), and the model decides from the new message and image whether to continue, re-plan, or wait.
+- **Long sessions.** Context compression and session resumption keep the session going across many image-heavy turns and server reconnects.
 
-- **`instruction_loop`** takes the next user instruction off a queue, cancels any running tool, captures a fresh frame, and sends the image followed by `USER: <text>\nROBOT: ee=(x, y, z) gripper=g`.
-- **`receive_loop`** handles server messages: text and thoughts become UI events, `tool_call` starts `run_tools` as a task, and `go_away` or an error triggers a reconnect using the stored resumption handle.
+The operator's behavior is set in `prompts/system.md`,
 
-**`run_tools`** runs the model's function calls in order. When they finish, it sends one image (the annotated `look` image if a tool produced one, otherwise a fresh post-motion frame) and then the function responses. A `send_lock` keeps an image and the text or response that belongs with it from interleaving with another send.
+## System layout
 
-**Interruption.** A new user message or a `/stop` while a tool is running cancels the tool task. `Robot._send_goal` catches the `CancelledError`, cancels the ROS goal, and re-raises. The tool then responds with `status: "interrupted"` (later calls in the batch get `"skipped"`). The response goes out before the new user turn, because the Live API expects every open function call to be answered first.
+```
+  Browser (web/index.html)      Phone app
+        │ rosbridge                 │ BLE / RFCOMM / TCP
+        │                     app_interface
+        ├── /user_instructions ◄────┘
+        ├── /stop
+        ◄── /agent/events, /agent/model_image, /robot_state
+        ▼
+  gemini_agent ◄──────────► Gemini Live API          OPERATOR + SKILLS
+        │ ROS 2 actions + /stop
+        ▼
+  kortex_controller ──── Kortex TCP ───► Kinova Gen3   PRIMITIVES
+  robot_state_publisher, realsense2_camera ─► TF, color + depth
+```
 
-#### Tools
-
-A tool is an async function `fn(ctx: ToolContext, **args) -> dict` registered with the `@tool(name, description, parameters)` decorator. `config.yaml`'s `tools:` list decides which ones the model is offered. `ToolContext` bundles `robot`, `camera`, `cfg`, `emit`, `publish_image`, and the `genai_client`, so the same tools run under `agent_node` or `tool_cli`.
-
-| Tool | Does |
+| Package | Role |
 |---|---|
-| `look(objects)` | Finds named objects and returns their base-frame centroids, grasp width, and depth estimate, plus an annotated image |
-| `pick(x, y, z, width_mm, depth_mm)` | Macro: preshape the gripper wider than the object, move to it, advance to its middle, close onto it |
-| `move_to(x, y, z)` | `MoveToPose` to a base-frame point, keeping the current orientation |
-| `move_relative(dx, dy, dz)` | Same as `move_to`, relative to the current pose |
-| `move_straight(distance)` | `MoveStraight` along the gripper axis |
-| `set_gripper(position)` | `CommandGripper` |
-| `go_to_preset(name)` | `MoveToJoints` to a preset from `config.yaml` (the enum is filled in from config) |
-| `stop()` | Publishes `/stop` and cancels open goals |
-| `move_to_pose(...)` | Raw 6-DoF pose (off by default; turning it on also exposes orientation in `state()`) |
-| `attach(name)` / `detach(name)` | Pick a physical tool off the holster, or put it back (the enum is filled in from `holster:` in `config.yaml`) |
+| `ros2_interfaces` | Primitive interfaces (actions, service, `RobotState`) |
+| `kortex_controller` | Primitive implementations (C++) |
+| `gemini_agent` | Skills (`skills/`), perception, and the operator session (`session.py`, `agent_node.py`) |
+| `app_interface` | Phone transports that publish user tasks to `/user_instructions` |
+| `kinova_bringup` | `robot.launch.py` (primitives, camera, TF, rosbridge) and `agent.launch.py` (adds the operator) |
+| `web/index.html` | Shows each user turn, model thought, skill call and result, and every image the model saw|
 
-Every result is a JSON-able dict with `ok`, `status`, optional `message`, and a `robot` state snapshot. Keys starting with `_` (such as `_image`) are stripped before the dict goes to the model.
+The layers communicate only over ROS 2 topics and actions, so each one can be restarted or replaced on its own. `agent_node` publishes every step to `/agent/events` (`user_text`, `model_thought`, `skill_call`, `skill_result`, `look`, `holster`, ...) and every image sent to the model to `/agent/model_image`, so the UI shows exactly what the model saw.
 
-#### Perception (`look`)
-
-`perception.locate_objects(snapshot, names)` works in three stages, each swappable:
-
-1. **`detector.detect_boxes`**: a non-streaming Gemini call (`perception.detector_model`) returns `box_2d` boxes normalized to 0–1000, one per visible instance, each with a `depth_mm` estimate. The prompt lives in `prompts/look.md` (`perception.look_prompt`).
-2. **`segmenter.segment`**: SAM2 (local checkout, not pip-installed) turns each box into its highest-scoring mask.
-3. **`localize.measure`**: deprojects the mask's valid depth pixels with the intrinsics, transforms them into the base frame with the snapshot's TF, and averages them for the centroid. It also returns `width_mm`, the object's extent across the gripper fingers.
-
-`width_mm` is measured; `depth_mm` is not. Nothing in the pipeline can see an object's hidden side, so depth is the detector model's prior from what the object is ("a fork is a few mm thick, an upright mug is its diameter"). `pick` treats it as a guess and clamps it to `MAX_DEPTH_MM`.
-
-Width is the pixel span of the mask scaled by the object's median depth, `Δu · z / fx`. That is the extent along the camera's x axis, which is the grasp axis because the gripper's orientation is never changed — its fingers always open along the image's horizontal axis. The span uses the 2nd/98th percentile of the mask's columns rather than its min and max, since the extremes are exactly where SAM2 bleeds past the silhouette and where the depth camera drops out. The trim costs a few percent on small objects, well inside `pick`'s clearance.
-
-Objects get ids like `red cup#1` that are valid only for that call. `localize.annotate` draws mask outlines and ids onto the image, which is sent back to the model so it can check its own detections.
-
-Because coordinates are in the base frame, they stay valid after the camera moves. The system prompt (`prompts/system.md`) tells the model to measure once with `look` and plug the result into the motion tools.
-
-#### Grasping (`pick`)
-
-Closing a fully-open gripper onto an object drags or tips it before the pads meet, which was the main cause of failed grasps. `tools/grasp.py` replaces that with a four-step macro driven by `look`'s measurements:
-
-1. preshape the gripper to `width_mm + CLEARANCE_MM`, so the fingers clear the object before anything is near it
-2. `MoveToPose` to the object's centroid, keeping the current orientation
-3. `MoveStraight` by `depth_mm / 2`, so the pads straddle the object's middle rather than its near face
-4. close to `width_mm − SQUEEZE_MM`, so the fingers load against the object instead of stopping beside it
-
-`CLEARANCE_MM` and `SQUEEZE_MM` are module constants, like the holster's tuning. `gripper_for_width` maps millimeters to a gripper command by linear interpolation over a table measured on hardware (143 mm at 0.0 down to 0 mm at 0.98), clamped at both ends. Objects thinner than the table's 5.5 mm resolution fall through to 0.98, i.e. close all the way.
-
-`pick` does not change orientation and does not verify the grasp; the model aims the gripper first and checks the result in the image it gets afterwards.
-
-#### Tool holster (`attach` / `detach`)
-
-The holster holds physical tools (a fork, a brush, ...) in front of the arm, each slot marked with a DICT_4X4_50 ArUco marker. `config.yaml`'s `holster:` block maps marker id to tool name and is maintained by hand to match the physical holster; its names become the `attach`/`detach` enum.
-
-Both tools run the same six steps in `tools/holster.py`: move to the `holster` preset (`attach` also closes the gripper to `ATTACH_GRIPPER_START`, so its release starts from a known opening), detect the slot's marker with `perception/aruco.py` and take `marker center + offset` as the target point, move above it keeping the current orientation, move straight in along the tool axis, open (attach) or close (detach) the gripper by a fixed amount, and move straight back out. The offsets, hover heights, and distances are module constants tuned on hardware with `scratch/holster_test.py`, whose steps 1–6 and 8–13 are the two sequences.
-
-The detection takes the first camera frame stamped after the arm parked at the preset, not one newer than the moment it asks: TF is resolved at the frame's own stamp, so any frame from the parked pose is geometrically correct, and the wrist stream stalls for up to a second at a time.
-
-The module remembers what is attached, so `attach` refuses while something is held and `detach` refuses a name that does not match. The state starts out unknown after a restart, in which case `detach` proceeds anyway.
-
-> The mounted tool changes the TCP; nothing accounts for that yet, so motion after an `attach` is still relative to the bare gripper.
-
-#### Observability
-
-`agent_node` publishes every step to `/agent/events` as JSON (`{t, type, data}`, with types such as `session`, `user_text`, `model_text`, `model_thought`, `tool_call`, `tool_result`, `look`, `image`, `turn_complete`, `error`). It also publishes every image the model receives on `/agent/model_image`, with `header.frame_id` set to the image id. `Session.send_image` is the only path images take to the model, so the UI shows exactly what the model saw.
-
-### `app_interface`: phone transports
-
-Three interchangeable nodes, one per transport. Each receives newline-delimited text instructions from a phone app and republishes them on `/user_instructions`:
-
-- `ble_interface`: BLE central (bleak) that scans for a phone advertising a Nordic-UART-style service. Outgoing status is chunked into `n/total:` frames (`ble_framing.py`).
-- `bluetooth_interface`: classic Bluetooth RFCOMM server on channel 1. It calls libc directly because Anaconda's Python lacks `AF_BLUETOOTH` support.
-- `network_interface`: TCP server on port 9100 (same Wi-Fi network).
-
-Each node also forwards `/brain_status` strings back to the phone. The current agent does not publish `/brain_status`; it reports through `/agent/events`.
-
-### `kinova_bringup`: launch
-
-- **`robot.launch.py`** starts `kortex_controller`, `robot_state_publisher` (URDF from `kortex_description` via xacro), the RealSense driver (aligned depth on), two static transforms from `camera_link` (`realsense_link` for point-cloud display, and `physical_realsense_link`, the frame `look` projects through), rosbridge, web_video_server, and optionally RViz.
-- **`agent.launch.py`** includes `robot.launch.py`, adds `gemini_agent`, and starts one `app_interface` transport chosen with `app:=`.
-
-### `web/index.html`: operator UI
-
-A single static page using roslibjs over rosbridge, styled with Tailwind and Font Awesome from CDNs. The layout is a header (connection and session pills, emergency stop), a two-thirds event timeline beside the camera stream from `web_video_server`, and a `/robot_state` strip along the bottom (pose, orientation, gripper bar, and a Moving/Stationary estimate derived client-side from joint-angle deltas, since nothing publishes a motion flag).
-
-The timeline is built from `/agent/events`: user and model bubbles, collapsible thoughts, tool calls and results with status badges, and `look`/`holster` summaries. `/agent/model_image` frames are attached to their events by image id, in either arrival order. The instruction box publishes `/user_instructions` and the stop button publishes `/stop`.
-
-## Configuration
-
-All runtime behavior is in `config.yaml` at the repo root:
-
-- `model`: Live model name, thinking level, whether thoughts are included, system prompt path, context compression
-- `tools`: which tools the model gets
-- `perception`: detector model, SAM2 repo, config, checkpoint, device, and whether the annotated image is sent
-- `holster`: ArUco marker id -> the physical tool in that holster slot
-- `camera`: topics, projection and base frames, image send width and JPEG quality, settle time after motion, sync slop
-- `presets`: named joint configurations (degrees)
-- `ros`: topic names used by the agent
-
-`GEMINI_API_KEY` is read from `.env` at the repo root.
-
-## Design choices
-
-- **Primitive actions, reasoning in the model.** The controller exposes only a few motion primitives. Task logic (look, approach, grasp, verify) lives in the model's tool calls, guided by `prompts/system.md`.
-- **Base-frame coordinates everywhere.** Perception returns base-frame points and the motion tools accept them, so the model never deals with camera frames.
-- **An image after every action.** The model gets a fresh frame after each tool batch and each user turn, so it can check what actually happened instead of trusting the tool's `ok` status.
-- **Stop at two levels.** `/stop` halts the arm directly in C++ without waiting on Python, and also cancels the agent's running tool.
-- **Tools don't depend on the model.** Tools depend only on `ToolContext`, so `tool_cli` can test each one on hardware without a Gemini session.

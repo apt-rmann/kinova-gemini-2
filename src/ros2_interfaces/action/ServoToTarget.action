@@ -1,11 +1,9 @@
-# Goal - drive the robot to a location with Twist (velocity) commands
+# Goal - drive the TCP to a target with Twist (velocity) commands, translation only
 
-# goal position is published on /servo_vector (vector from EE to target), not sent in the action call
+# the target is not sent in the goal: the caller streams the vector from the TCP to the target on
+# /servo_vector (geometry_msgs/Vector3Stamped, base_link components) for as long as the goal runs
 
-# currently only used to bring food to the face
-
-float32 stop_distance   # how far away to stop from the target
-float32 hold_time       # how long to freeze robot once it reaches position
+float32 stop_distance   # meters; succeed once the vector is shorter than this
 ---
 # Result
 bool success

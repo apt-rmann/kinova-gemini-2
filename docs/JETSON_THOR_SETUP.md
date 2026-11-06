@@ -461,7 +461,7 @@ pip install google-genai python-dotenv pyyaml opencv-contrib-python \
 ```
 
 `opencv-contrib-python`, not plain `opencv-python`: `perception/aruco.py` uses `cv2.aruco`,
-which is a contrib module, and the holster tool needs it.
+which is a contrib module, and the holster skills need it.
 
 **Check:** `python -c "import cv2; cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50); print('aruco ok')"`
 
@@ -582,7 +582,7 @@ echo 'source ~/kinova-gemini-2/install/setup.bash' >> ~/.bashrc
 Expect this to take longer than on the laptop; the C++ controller against the Kortex static lib
 is the slow part. `colcon` builds `ros2_interfaces` first on its own.
 
-Because the venv was active during the build, the generated `agent_node` / `tool_cli` shebangs
+Because the venv was active during the build, the generated `agent_node` / `skill_cli` shebangs
 already point into the venv — **the `sed` shebang hack in `README.md` is a conda workaround and
 must not be run here.**
 
@@ -590,7 +590,7 @@ must not be run here.**
 
 ```bash
 head -1 install/gemini_agent/lib/gemini_agent/agent_node   # should point into ~/venvs/kinova-gemini
-ros2 run gemini_agent tool_cli --list                      # prints the enabled tools
+ros2 run gemini_agent skill_cli --list                      # prints the enabled skills
 ```
 
 ---
@@ -635,7 +635,7 @@ covered by `CLAUDE.md` trap 2 — latched `/tf_static` takes ~3 s to reach a new
 **11.4 — perception on the GPU**, with no model in the loop:
 
 ```bash
-ros2 run gemini_agent tool_cli look '{"objects": ["red cup"]}'
+ros2 run gemini_agent skill_cli look '{"objects": ["red cup"]}'
 ```
 
 Watch the log for `loaded sam2.1/... on cuda in Ns`. **Note that N.** If it is ever minutes
@@ -646,8 +646,8 @@ and the Thor's individual CPU cores are slower than the Legion's, so the symptom
 **11.5 — motion**, small and deliberate:
 
 ```bash
-ros2 run gemini_agent tool_cli move_relative '{"dz": 0.03}'
-ros2 run gemini_agent tool_cli go_to_preset '{"name": "home"}'
+ros2 run gemini_agent skill_cli move_relative '{"dz": 0.03}'
+ros2 run gemini_agent skill_cli go_to_preset '{"name": "home"}'
 ```
 
 **11.6 — the whole stack:**
@@ -907,9 +907,9 @@ journalctl -u kinova-agent -f          # live log; this replaces watching a term
 sudo systemctl restart kinova-agent    # the whole deploy loop, for Python-only changes
 sudo systemctl stop kinova-agent
 
-# single tools, no model in the loop
-ros2 run gemini_agent tool_cli --list
-ros2 run gemini_agent tool_cli look '{"objects": ["red cup"]}'
+# single skills, no model in the loop
+ros2 run gemini_agent skill_cli --list
+ros2 run gemini_agent skill_cli look '{"objects": ["red cup"]}'
 
 # stop the arm
 ros2 topic pub --once /stop std_msgs/msg/Empty

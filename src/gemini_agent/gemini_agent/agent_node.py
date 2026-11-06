@@ -13,13 +13,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Empty, String
 
-from gemini_agent import tools as tool_registry
+from gemini_agent import skills as skill_registry
 from gemini_agent.camera import Camera
 from gemini_agent.config import load_config
 from gemini_agent.robot import Robot
 from gemini_agent.session import Session
-from gemini_agent.tools import ToolContext
-from gemini_agent.app_commands import AppCommands
+from gemini_agent.skills import SkillContext
+
 
 class AgentNode(Node):
     def __init__(self, cfg):
@@ -48,7 +48,7 @@ def main():
 
     # load SAM2 before any camera subscriptions exist: once they are up, this
     # pure-Python import is GIL-starved and takes minutes instead of seconds
-    if 'look' in cfg['tools']:
+    if 'look' in cfg['skills']:
         from gemini_agent.perception import segmenter
         print('loading SAM2...', flush=True)
         segmenter.preload(cfg['perception'])
@@ -70,16 +70,14 @@ def main():
     if not robot.wait_for_state(2.0):
         node.get_logger().warn('no RobotState received - is the controller running?')
 
-    ctx = ToolContext(
+    ctx = SkillContext(
         robot=robot, camera=camera, cfg=cfg,
         emit=node.emit, publish_image=node.publish_image,
         genai_client=genai.Client(api_key=os.environ['GEMINI_API_KEY']))
-    session = Session(cfg, tool_registry.load(cfg['tools'], cfg), ctx)
+    session = Session(cfg, skill_registry.load(cfg['skills'], cfg), ctx)
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    app_commands = AppCommands(cfg, session, node.emit)
 
     # ROS callbacks never touch asyncio objects directly
     ros = cfg['ros']
@@ -88,10 +86,7 @@ def main():
         lambda msg: loop.call_soon_threadsafe(session.instructions.put_nowait, msg.data), 10)
     node.create_subscription(
         Empty, ros['stop_topic'],
-        lambda _msg: loop.call_soon_threadsafe(session.on_stop), 10) 
-    node.create_subscription(
-        String, ros['config_topic'],
-        lambda msg_config: loop.call_soon_threadsafe(app_commands.submit, msg_config.data), 10)
+        lambda _msg: loop.call_soon_threadsafe(session.on_stop), 10)
 
     node.get_logger().info('gemini_agent ready - open web/index.html in a browser')
 
@@ -100,7 +95,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        loop.run_until_complete(session.cancel_tool('shutting down'))
+        loop.run_until_complete(session.cancel_skill('shutting down'))
         loop.close()
         executor.shutdown()
         spin_thread.join(timeout=2.0)

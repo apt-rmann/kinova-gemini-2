@@ -5,7 +5,7 @@ model:
   system_prompt: prompts/system.md
   context_compression: true      # sliding-window compression for long, image-heavy sessions
 
-tools:                           # enabled tools; comment a line out to remove a tool
+skills:                          # enabled skills; comment a line out to remove a skill
   - look
   - pick
   - move_to
@@ -18,9 +18,11 @@ tools:                           # enabled tools; comment a line out to remove a
   - detach
   # - move_to_pose               # raw 6-DoF Euler pose; off by default
 
-holster:                         # ArUco marker id -> tool in that holster slot. Maintain by hand to match physical holster
-  1: nothing                 
-  2: fork                    
+tools:   # holster tools - maintain to match the physical holster.
+                                 #   marker: ArUco id on the tool's holster slot
+                                 #   length (meters): how far the tool extends the TCP along tool +Z, meters (measured by hand; default 0)
+  nothing: {marker: 1}
+  fork: {marker: 2, length: 0.1}
 
 presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
   home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
@@ -34,9 +36,9 @@ perception:
   look_prompt: prompts/look.md     # detector prompt: boxes + the per-object depth estimate
   detector_model: gemini-3.5-flash-lite   # any non-streaming Gemini model that returns box_2d; verify availability
   detector_thinking_level: medium   # none | minimal | low | medium | high
-  sam2_repo: /home/mcrr-lab/raf-live/SAM2_streaming   # local SAM2 checkout
-  sam2_config: sam2.1/sam2.1_hiera_t.yaml            # hydra name under <sam2_repo>/configs
-  sam2_checkpoint: checkpoints/sam2.1/sam2.1_hiera_tiny.pt   # relative to sam2_repo, or absolute
+  sam2_repo: /home/mcrr-lab/sam2   # local SAM2 checkout
+  sam2_config: configs/sam2.1/sam2.1_hiera_t.yaml           # hydra name under <sam2_repo>/configs
+  sam2_checkpoint: checkpoints/sam2.1_hiera_tiny.pt  # relative to sam2_repo, or absolute
   device: cuda
   send_annotated_image: true     # after look, the model receives the annotated image
 
