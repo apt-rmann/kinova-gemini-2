@@ -28,6 +28,7 @@
             android:exported="false"></activity>
         <activity
             android:name=".RobotActivity"
+            android:theme="@style/Theme.RobotCaregiver.Config"
             android:exported="false"></activity>
     </application>
 </manifest>

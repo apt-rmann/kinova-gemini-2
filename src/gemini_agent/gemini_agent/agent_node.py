@@ -19,7 +19,7 @@ from gemini_agent.config import load_config
 from gemini_agent.robot import Robot
 from gemini_agent.session import Session
 from gemini_agent.skills import SkillContext
-
+from gemini_agent.app_commands import AppCommands
 
 class AgentNode(Node):
     def __init__(self, cfg):
@@ -79,6 +79,8 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    app_commands = AppCommands(cfg, session, node.emit)
+
     # ROS callbacks never touch asyncio objects directly
     ros = cfg['ros']
     node.create_subscription(
@@ -86,7 +88,10 @@ def main():
         lambda msg: loop.call_soon_threadsafe(session.instructions.put_nowait, msg.data), 10)
     node.create_subscription(
         Empty, ros['stop_topic'],
-        lambda _msg: loop.call_soon_threadsafe(session.on_stop), 10)
+        lambda _msg: loop.call_soon_threadsafe(session.on_stop), 10) 
+    node.create_subscription(
+        String, ros['config_topic'],
+        lambda msg_config: loop.call_soon_threadsafe(app_commands.submit, msg_config.data), 10)
 
     node.get_logger().info('gemini_agent ready - open web/index.html in a browser')
 

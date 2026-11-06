@@ -1,18 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
     android:gravity="center_vertical"
     android:paddingVertical="8dp">
 
-    <TextView
-        android:id="@+id/markerId"
-        android:layout_width="40dp"
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="80dp"
         android:layout_height="wrap_content"
-        android:text="1"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+        android:layout_marginEnd="8dp"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+        <EditText
+            android:id="@+id/markerId"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="#"
+            android:gravity="center"
+            android:inputType="number"
+            android:maxLength="4"
+            android:imeOptions="actionNext"
+            android:textStyle="bold" />
+    </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.textfield.TextInputLayout
         android:layout_width="0dp"
@@ -25,7 +36,27 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="Enter Name"
+            android:imeOptions="actionNext"
             android:inputType="text" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <!-- How far the tool extends the TCP along tool +Z, in meters (config.yaml `length`). Blank = 0. -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="110dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:hint="Length"
+        app:suffixText="m"
+        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+
+        <EditText
+            android:id="@+id/length"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:imeOptions="actionDone"
+            android:inputType="numberDecimal"
+            android:maxLength="6" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <ImageButton

@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from gemini_agent import tools as tool_registry
+from gemini_agent import skills as skill_registry
 from gemini_agent.config import CONFIG_PATH
 from gemini_agent.config_editor import ConfigEditor
 
@@ -30,6 +30,6 @@ class AppCommands:
         self.emit('config', reply)
 
     def _on_config_changed(self):
-        self.session.tools = tool_registry.load(self.cfg['tools'], self.cfg)
-        if 'attach' in self.session.tools or 'detach' in self.session.tools:
+        self.session.skills = skill_registry.load(self.cfg['skills'], self.cfg)
+        if 'attach' in self.session.skills or 'detach' in self.session.skills:
             self.session.request_reconfigure()

@@ -19,7 +19,7 @@ See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for more details.
 
 - ROS 2 with `realsense2_camera`, `kortex_description`, `robot_state_publisher`, `rosbridge_server`, `web_video_server`, `cv_bridge`, `message_filters`, `tf2_ros`
 - Kinova Kortex C++ API, unpacked into `src/kortex_controller/kortex_api/` (`include/` and `lib/release/libKortexApiCpp.a`; not checked in)
-- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `opencv-python`, `numpy`, `torch`
+- Python deps for the agent: `google-genai`, `python-dotenv`, `pyyaml`, `ruamel.yaml`, `opencv-python`, `numpy`, `torch`
 - A local [SAM2](https://github.com/facebookresearch/sam2) checkout with a checkpoint (path set in `config.yaml` under `perception`)
 - A CUDA GPU (for SAM2) and a Gemini API key
 

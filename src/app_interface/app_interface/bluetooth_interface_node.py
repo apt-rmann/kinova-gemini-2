@@ -1,7 +1,6 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-from sensor_msgs.msg import CompressedImage
 import ctypes
 import struct
 import os
@@ -169,8 +168,8 @@ class BluetoothInterfaceNode(Node):
                 self.get_logger().warn(f'Failed to send to tablet: {e}')
             t_done_bt = time.time()
             self.get_logger().info(
-                f'time before received by node: {(timeData['time_ev'] - timeData['time_node_rec']) * 1000:.0f}ms \n'
-                f'time in queue: {(t_start_bt - timeData['time_ev']) * 1000:.0f}ms \n'
+                f'time before received by node: {(timeData['time_node_rec'] - timeData['time_ev']) * 1000:.0f}ms \n'
+                f'time in queue: {(t_start_bt - timeData['time_node_rec']) * 1000:.0f}ms \n'
                 f'time to send over bt: {(t_done_bt - t_start_bt) * 1000:.0f}ms \n'
                 f'total time: {(t_done_bt - timeData['time_ev']) * 1000:.0f}ms'
             )
@@ -184,7 +183,7 @@ class BluetoothInterfaceNode(Node):
         elif ev['type'] == 'model_thought':
             self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
         elif ev['type'] == 'config':
-            self.queue_message(b'\x02', (ev['data'].encode("utf-8") + "\n").encode("utf-8"), timeData)
+            self.queue_message(b'\x02', (json.dumps(ev['data'], default=str) + "\n").encode("utf-8"), timeData)
     
     def queue_message(self, packet_type, payload, timeData):
         with self._out_cv:
@@ -225,4 +224,4 @@ def main(args=None):
         rclpy.shutdown()
 
 if __name__ == '__main__':
-    main()
+    main()

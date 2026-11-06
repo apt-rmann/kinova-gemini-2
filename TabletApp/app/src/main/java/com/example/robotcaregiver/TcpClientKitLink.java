@@ -14,6 +14,8 @@ import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import fi.iki.elonen.NanoHTTPD;
 
@@ -27,6 +29,9 @@ public class TcpClientKitLink implements KitLink{
     private OutputStream out;
 
     private StreamServer streamServer;
+
+    private final ExecutorService sender =
+            Executors.newSingleThreadExecutor(r -> new Thread(r, "TcpClientKitSend"));
 
 
 
@@ -71,7 +76,8 @@ public class TcpClientKitLink implements KitLink{
     }
 
     public void sendInstruction(@NonNull String text){
-        new Thread(() -> {
+        if (sender.isShutdown()) return;   // link was disconnected
+        sender.execute(() -> {
             try {
                 if (out != null){
                     out.write((text + "\n").getBytes(StandardCharsets.UTF_8));
@@ -80,7 +86,7 @@ public class TcpClientKitLink implements KitLink{
             } catch (Exception e){
                 notifyConn(false, "Send failed: " + e.getMessage());
             }
-        }, "TcpClientKitSend").start();
+        });
     }
 
     public boolean isConnected() {
@@ -88,6 +94,7 @@ public class TcpClientKitLink implements KitLink{
     }
 
     public void disconnect() {
+        sender.shutdown();   // anything already queued still goes out first
         try {
             if (socket != null) socket.close();
             if (streamServer != null) streamServer.stop();

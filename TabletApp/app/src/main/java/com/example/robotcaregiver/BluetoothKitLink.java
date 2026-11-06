@@ -24,6 +24,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * BTC link to the kit.
@@ -38,6 +40,11 @@ public class BluetoothKitLink implements KitLink {
             UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
     private static final int RFCOMM_CHANNEL = 1;
+
+    // One sender thread for this link: messages go out one at a time, in the order they were
+    // sent. A thread per message let them race (e.g. a holster "clear" landing after its "set").
+    private final ExecutorService sender =
+            Executors.newSingleThreadExecutor(r -> new Thread(r, "kit-bt-send"));
 
     private final String deviceMac;
     private final int channel;
@@ -153,7 +160,8 @@ public class BluetoothKitLink implements KitLink {
 
     @Override
     public void sendInstruction(@NonNull String command) {
-        new Thread(() -> {
+        if (sender.isShutdown()) return;   // link was disconnected
+        sender.execute(() -> {
             try {
                 if (out != null) {
                     out.write((command + "\n").getBytes(StandardCharsets.UTF_8));
@@ -163,12 +171,13 @@ public class BluetoothKitLink implements KitLink {
                 Log.e(TAG, "send failed", e);
                 notifyConn(false, "Send failed: " + e.getMessage());
             }
-        }, "kit-bt-send").start();
+        });
     }
 
     @Override
     public void disconnect() {
         running = false;
+        sender.shutdown();   // anything already queued still goes out first
         try { if (socket != null) socket.close(); } catch (Exception ignored) {}
         notifyConn(false, "Disconnected");
     }

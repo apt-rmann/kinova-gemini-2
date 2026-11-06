@@ -121,7 +121,13 @@ public class MainActivity extends AppCompatActivity
     private ActivityResultLauncher<Intent> robotLauncher;
     private ActivityResultLauncher<String[]> permissionLauncher;
 
-    private String connectedHost;
+    // "<transport>:<address>" of the current/last connection, so Settings changes can reconnect
+    private String connectedTarget;
+    // Lines starting with this go to the kit's /config_update topic (config_editor), not the model
+    private static final String CONFIG_PREFIX = "CONFIG ";
+    // Kit's holster (config.yaml `tools:` block, {"<tool>": {"marker": id, "length": m}}) from
+    // its last config reply; null = not known
+    @Nullable private JSONObject kitHolster;
     private static final int KIT_PORT = 9100;
     private static final long CONNECT_TIMEOUT = 30000;
     private CountDownTimer connectTimer;
@@ -172,7 +178,7 @@ public class MainActivity extends AppCompatActivity
 
         robotLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
-                result -> onRobotClosed());
+                result -> onRobotClosed(result.getResultCode(), result.getData()));
 
         permissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestMultiplePermissions(),
@@ -231,7 +237,13 @@ public class MainActivity extends AppCompatActivity
         settingsButton.setOnClickListener(v ->
                 settingsLauncher.launch(new Intent(this, SettingsActivity.class)));
         connectButton.setOnClickListener(v -> connectToKit());
-        robotButton.setOnClickListener(v -> robotLauncher.launch(new Intent(this, RobotActivity.class)));
+        robotButton.setOnClickListener(v -> {
+            Intent intent = new Intent(this, RobotActivity.class);
+            if (kitHolster != null) {
+                intent.putExtra(RobotActivity.EXTRA_CURRENT_HOLSTER, kitHolster.toString());
+            }
+            robotLauncher.launch(intent);
+        });
 
         frameView.setVisibility((!settings.isBle() & !settings.isBluetooth()) ? VISIBLE : GONE);
 
@@ -629,19 +641,86 @@ public class MainActivity extends AppCompatActivity
         });
     }
 
-    private void onRobotClosed() {
+    private void onRobotClosed(int resultCode, @Nullable Intent data) {
+        if (resultCode != RESULT_OK || data == null) return;
+        String[] ops = data.getStringArrayExtra(RobotActivity.EXTRA_CONFIG_OPS);
+        if (ops == null || ops.length == 0) return;
+        if (kit == null || !kit.isConnected()) {
+            addStatus("Not connected to the kit — holster config not sent.", VIEW_TYPE_PHONE);
+            return;
+        }
+        for (String op : ops) {
+            kit.sendInstruction(CONFIG_PREFIX + op);
+        }
+    }
 
+    /** Ask the kit for its holster block; the reply lands in handleConfigReply. */
+    private void requestHolster() {
+        // BLE interface node doesn't route CONFIG lines yet
+        if (kit == null || !kit.isConnected() || settings.isBle()) return;
+        try {
+            kit.sendInstruction(CONFIG_PREFIX + new JSONObject()
+                    .put("op", "get_holster").put("id", "tablet-sync").toString());
+        } catch (JSONException e) {
+            Log.w("MainActivity", "couldn't build get_holster", e);
+        }
+    }
+
+    /**
+     * If status is a config_editor reply ({"op", "ok", "tools", ...}), cache the holster and
+     * show a short result instead of the raw JSON. Returns false for any other status text.
+     */
+    private boolean handleConfigReply(@NonNull String status) {
+        String text = status.trim();
+        if (!text.startsWith("{")) return false;
+        JSONObject reply;
+        try {
+            reply = new JSONObject(text);
+        } catch (JSONException e) {
+            return false;
+        }
+        if (!reply.has("ok") || !reply.has("tools")) return false;
+
+        JSONObject holster = reply.optJSONObject("tools");
+        if (holster != null) kitHolster = holster;
+
+        String message = reply.optString("message", "");
+        if (!reply.optBoolean("ok", false)) {
+            addStatus("Holster update failed: " + (message.isEmpty() ? "unknown error" : message),
+                    VIEW_TYPE_PHONE);
+        } else if (!message.isEmpty()) {
+            addStatus("Holster: " + message, VIEW_TYPE_PHONE);
+        }
+        return true;
+    }
+
+    /** "<transport>:<address>" for the current Settings; null if that transport's address is unset. */
+    @Nullable
+    private String settingsTarget() {
+        if (settings.isBle()) return "ble:";   // BLE needs no address
+        String address = settings.isBluetooth() ? settings.getKitMac() : settings.getKitHost();
+        if (address == null || address.trim().isEmpty()) return null;
+        return (settings.isBluetooth() ? "bluetooth:" : "wifi:") + address.trim();
+    }
+
+    /** Tell the user which address is missing for the selected transport. */
+    private void reportMissingAddress() {
+        addStatus(settings.isBluetooth()
+                        ? "No kit selected. Open Settings and pick the kit's Bluetooth device."
+                        : "No kit address set. Open Settings and enter the kit's IP.",
+                VIEW_TYPE_PHONE);
+        setConnectedUi(false);
     }
 
     private void onSettingsClosed() {
-        String newHost = settings.getKitHost();
-        if (newHost == null || newHost.isEmpty()) {
-            addStatus("No kit address set. Open Settings and enter the kit's IP.", VIEW_TYPE_PHONE);
-            setConnectedUi(false);
+        String target = settingsTarget();
+        if (target == null) {
+            reportMissingAddress();
             return;
         }
-        if (!newHost.equals(connectedHost) || kit == null || !kit.isConnected()) {
-            if(DEBUGGING) addStatus("Address changed. Reconnecting to " + newHost + "\u2026", VIEW_TYPE_PHONE);
+        // reconnect if the transport or its address changed, or we aren't connected
+        if (!target.equals(connectedTarget) || kit == null || !kit.isConnected()) {
+            if(DEBUGGING) addStatus("Settings changed. Reconnecting to " + target + "\u2026", VIEW_TYPE_PHONE);
             connectToKit();
         }
     }
@@ -651,9 +730,9 @@ public class MainActivity extends AppCompatActivity
         String type = settings.isBluetooth() ? "Bluetooth"
                 : (settings.isBle() ? "BLE" : "WiFi");
 
-        if (type.equals("WiFi") && (host == null || host.isEmpty())) {
-            addStatus("No kit address set. Open Settings and enter the kit's IP.", VIEW_TYPE_PHONE);
-            setConnectedUi(false);
+        String target = settingsTarget();
+        if (target == null) {
+            reportMissingAddress();
             return;
         }
 
@@ -662,7 +741,7 @@ public class MainActivity extends AppCompatActivity
             kit.disconnect();
         }
 
-        connectedHost = host;
+        connectedTarget = target;
         kit = settings.isBluetooth()
                 ? new BluetoothKitLink(settings.getKitMac(), settings.getChannel(), this)
                 : (settings.isBle() ? new BleKitLink(this) : new TcpClientKitLink(host, KIT_PORT, this));
@@ -720,12 +799,21 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override public void onKitStatus(@NonNull String status) {
-        runOnUiThread(() -> addStatus(status, VIEW_TYPE_ROBOT));
+        runOnUiThread(() -> {
+            if (!handleConfigReply(status)) addStatus(status, VIEW_TYPE_ROBOT);
+        });
     }
 
     @Override public void onKitConnectionChanged(boolean connected, @NonNull String detail) {
         setConnectedUi(connected);
-        runOnUiThread(() -> toast(detail));
+        runOnUiThread(() -> {
+            toast(detail);
+            if (connected) {
+                requestHolster();
+            } else {
+                kitHolster = null;   // re-sync on the next connection
+            }
+        });
     }
 
     @Override public void onDbgMsg(@NonNull String msg) {

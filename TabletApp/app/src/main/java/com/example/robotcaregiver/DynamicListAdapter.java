@@ -7,10 +7,10 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.ImageButton;
-import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class DynamicListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -19,21 +19,48 @@ public class DynamicListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
     public static final int VIEW_TYPE_OTHER = 2;
 
     private int currentViewType = VIEW_TYPE_HOLSTER;
+    // Kept across dropdown switches so entered data isn't lost
     private final List<HolsterItem> holsterList = new ArrayList<>();
 
     // Set the view format depending on dropdown selection
     public void setListFormat(int viewType) {
+        if (this.currentViewType == viewType) return;
         this.currentViewType = viewType;
-        this.holsterList.clear(); // Clear old list items when switching formats
         notifyDataSetChanged();
     }
 
     // Add a new blank item to the active list style
     public void addNewItem() {
         if (currentViewType == VIEW_TYPE_HOLSTER) {
-            holsterList.add(new HolsterItem());
+            holsterList.add(new HolsterItem(String.valueOf(nextHolsterNumber())));
             notifyItemInserted(holsterList.size() - 1);
         }
+    }
+
+    // Add a pre-filled holster row (e.g. a slot already in the kit's config)
+    public void addHolsterItem(String number, String tool, String length) {
+        HolsterItem item = new HolsterItem(number);
+        item.setTool(tool);
+        item.setLength(length);
+        holsterList.add(item);
+        notifyItemInserted(holsterList.size() - 1);
+    }
+
+    public List<HolsterItem> getHolsterItems() {
+        return Collections.unmodifiableList(holsterList);
+    }
+
+    // Highest valid number currently in the list + 1 (starts at 1)
+    private int nextHolsterNumber() {
+        int max = 0;
+        for (HolsterItem item : holsterList) {
+            try {
+                max = Math.max(max, Integer.parseInt(item.getNumber().trim()));
+            } catch (NumberFormatException ignored) {
+                // Blank/invalid numbers are skipped
+            }
+        }
+        return max + 1;
     }
 
     @Override
@@ -61,35 +88,22 @@ public class DynamicListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
             HolsterViewHolder holsterHolder = (HolsterViewHolder) holder;
             HolsterItem item = holsterList.get(position);
 
-            // Set up auto-incremented numbering (1-based index)
-            holsterHolder.markerId.setText((position + 1) + ".");
-
-            // Temporarily remove TextWatcher to avoid infinite loops while binding data
-            holsterHolder.removeTextWatcher();
+            // Detach old watchers so setText doesn't write into the previously bound item
+            holsterHolder.removeTextWatchers();
+            holsterHolder.number.setText(item.getNumber());
             holsterHolder.tool.setText(item.getTool());
+            holsterHolder.length.setText(item.getLength());
 
-            // Re-attach TextWatcher to save typing states directly back to our model list
-            holsterHolder.addTextWatcher(new TextWatcher() {
-                @Override
-                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            holsterHolder.setTextWatchers(
+                    new SimpleWatcher(item::setNumber),
+                    new SimpleWatcher(item::setTool),
+                    new SimpleWatcher(item::setLength));
 
-                @Override
-                public void onTextChanged(CharSequence s, int start, int before, int count) {
-                    item.setTool(s.toString());
-                }
-
-                @Override
-                public void afterTextChanged(Editable s) {}
-            });
-
-            // Renumbering deletion logic
             holsterHolder.delete.setOnClickListener(v -> {
                 int currentPos = holsterHolder.getAdapterPosition();
                 if (currentPos != RecyclerView.NO_POSITION) {
                     holsterList.remove(currentPos);
                     notifyItemRemoved(currentPos);
-                    // Shifts items up and updates numbering labels on subsequent rows
-                    notifyItemRangeChanged(currentPos, holsterList.size() - currentPos);
                 }
             });
         }
@@ -100,29 +114,64 @@ public class DynamicListAdapter extends RecyclerView.Adapter<RecyclerView.ViewHo
         return currentViewType == VIEW_TYPE_HOLSTER ? holsterList.size() : 0;
     }
 
+    private interface TextSink {
+        void accept(String text);
+    }
+
+    private static class SimpleWatcher implements TextWatcher {
+        private final TextSink sink;
+
+        SimpleWatcher(TextSink sink) {
+            this.sink = sink;
+        }
+
+        @Override
+        public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+
+        @Override
+        public void onTextChanged(CharSequence s, int start, int before, int count) {
+            sink.accept(s.toString());
+        }
+
+        @Override
+        public void afterTextChanged(Editable s) {}
+    }
+
     // ViewHolder specific to your 'Holster' row elements
     public static class HolsterViewHolder extends RecyclerView.ViewHolder {
-        final TextView markerId;
+        final EditText number;
         final EditText tool;
+        final EditText length;
         final ImageButton delete;
-        private TextWatcher activeTextWatcher;
+        private TextWatcher numberWatcher;
+        private TextWatcher toolWatcher;
+        private TextWatcher lengthWatcher;
 
         public HolsterViewHolder(@NonNull View itemView) {
             super(itemView);
-            markerId = itemView.findViewById(R.id.markerId);
+            number = itemView.findViewById(R.id.markerId);
             tool = itemView.findViewById(R.id.tool);
+            length = itemView.findViewById(R.id.length);
             delete = itemView.findViewById(R.id.delete);
         }
 
-        public void addTextWatcher(TextWatcher watcher) {
-            this.activeTextWatcher = watcher;
-            tool.addTextChangedListener(activeTextWatcher);
+        void setTextWatchers(TextWatcher numberWatcher, TextWatcher toolWatcher,
+                             TextWatcher lengthWatcher) {
+            this.numberWatcher = numberWatcher;
+            this.toolWatcher = toolWatcher;
+            this.lengthWatcher = lengthWatcher;
+            number.addTextChangedListener(numberWatcher);
+            tool.addTextChangedListener(toolWatcher);
+            length.addTextChangedListener(lengthWatcher);
         }
 
-        public void removeTextWatcher() {
-            if (activeTextWatcher != null) {
-                tool.removeTextChangedListener(activeTextWatcher);
-            }
+        void removeTextWatchers() {
+            if (numberWatcher != null) number.removeTextChangedListener(numberWatcher);
+            if (toolWatcher != null) tool.removeTextChangedListener(toolWatcher);
+            if (lengthWatcher != null) length.removeTextChangedListener(lengthWatcher);
+            numberWatcher = null;
+            toolWatcher = null;
+            lengthWatcher = null;
         }
     }
 }
