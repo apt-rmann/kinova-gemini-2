@@ -16,18 +16,20 @@ skills:                          # enabled skills; comment a line out to remove 
   - stop
   - attach
   - detach
+  - itch                       # needs the `itcher` entry in tools:
   # - move_to_pose               # raw 6-DoF Euler pose; off by default
 
 tools:   # holster tools - maintain to match the physical holster.
                                  #   marker: ArUco id on the tool's holster slot
                                  #   length (meters): how far the tool extends the TCP along tool +Z, meters (measured by hand; default 0)
-  fork: {marker: 2, length: 0.1}
-  spoon: {marker: 1, length: 0.1}
-  scratcher: {marker: 3, length: 0.1}
+  nothing: {marker: 1}
+  fork: {marker: 1, length: 0.072}
+  itcher: {marker: 2, length: 0.0}   # itch skill's tool: set its marker id and measured length, then uncomment
 
 presets:                         # joint angles, degrees (7 values). Keys become the go_to_preset enum.
   home: [0.0, 340.2, 179.3, 226.1, 358.5, 329.6, 92.1]                    # default position
-  user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
+  #user: [358.8, 32.4, 181.3, 277.9, 359.1, 24.5, 90.0]                    # facing the user
+  user: [120, 15, 180, 229, 359, 54, 90]
   #holster: [0.0, 351, 179.3, 242.7, 359.9, 293.8, 90.0] # test
   holster: [326.4, 6.87, 149.0, 257.3, 8.86, 291.2, 29.7] # sprint review
 

@@ -75,6 +75,7 @@ async def pick(ctx: SkillContext, x, y, z, width_mm, depth_mm) -> dict:
 | `look(objects)` | camera snapshot → Gemini detector → SAM2 → depth + TF | Finds named objects and returns their base-frame centroids, grasp width, and estimated depth, plus an annotated image |
 | `pick(x, y, z, width_mm, depth_mm)` | `CommandGripper` → `MoveToPose` → `MoveStraight` → `CommandGripper` | Opens just wider than the object, moves to it, advances to its middle, and closes onto it |
 | `attach(name)` / `detach(name)` | `MoveToJoints` → (`CommandGripper`) → ArUco detection → `MoveToPose` → `MoveStraight` → `CommandGripper` → `MoveStraight` | Takes a physical tool from its holster slot, or returns it |
+| `itch(location)` | `attach` → `MoveToJoints` → MediaPipe face landmarks + depth + TF → `ServoToTarget` → `MoveStraight` | Brings the itch tool's tip to a named spot on the user's face (regions in `perception/face.py`), re-measuring the face while it servos, holds still so the user can scratch, then backs off |
 | `move_to(x, y, z)` | `MoveToPose` | Moves to a base-frame point, keeping the current orientation |
 | `move_relative(dx, dy, dz)` | `MoveToPose` | Same, relative to the current position |
 | `move_straight(distance)` | `MoveStraight` | Moves along the gripper axis |

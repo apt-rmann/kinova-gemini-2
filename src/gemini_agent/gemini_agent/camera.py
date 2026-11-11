@@ -82,18 +82,18 @@ class Camera:
         while True:
             with self._lock:
                 pair = self._pair
-            if pair is not None and pair[2] > after:
+            # right after subscribing, the first frame can beat the first CameraInfo
+            if pair is not None and pair[2] > after and self._K is not None:
                 break
             if self.now() > deadline:
                 if pair is None:
                     raise TimeoutError(
                         f'no synchronized color/depth pair on {self.cfg["color_topic"]} and '
                         f'{self.cfg["depth_topic"]} - is the camera running?')
+                if self._K is None:
+                    raise RuntimeError(f'no CameraInfo received on {self.cfg["info_topic"]}')
                 raise TimeoutError(f'no camera frame newer than {after:.3f} within {timeout}s')
             await asyncio.sleep(0.02)
-
-        if self._K is None:
-            raise RuntimeError(f'no CameraInfo received on {self.cfg["info_topic"]}')
 
         await self._await_transform()
 

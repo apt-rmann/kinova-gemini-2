@@ -1012,6 +1012,10 @@ void Controller::execute_servo(const std::shared_ptr<GoalHandleServoToTarget> go
         last_vector_time = stamp;
 
         const double dist = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+        if (!std::isfinite(dist)) {   // NaN fails every comparison below and Kortex ignores the twist
+            fail("non-finite /servo_vector");
+            return;
+        }
         feedback->distance_to_go = static_cast<float>(dist);
         goal_handle->publish_feedback(feedback);
 
@@ -1046,6 +1050,9 @@ void Controller::execute_servo(const std::shared_ptr<GoalHandleServoToTarget> go
         twist->set_linear_x(static_cast<float>(v[0]));
         twist->set_linear_y(static_cast<float>(v[1]));
         twist->set_linear_z(static_cast<float>(v[2]));
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "Servo: %.3f m to go, vector (%.3f, %.3f, %.3f), twist (%.3f, %.3f, %.3f) m/s",
+            dist, e[0], e[1], e[2], v[0], v[1], v[2]);
 
         try {
             std::lock_guard<std::mutex> lock(mApiMutex);
