@@ -9,6 +9,9 @@ src/kortex_controller/kortex_api
 # model downloads (see README)
 models/
 
+# Robotiq gripper description built from source (apt's robotiq_description lacks the 2F-140)
+src/ros2_robotiq_gripper/
+
 # secrets (.env.example is the committed template)
 .env
 

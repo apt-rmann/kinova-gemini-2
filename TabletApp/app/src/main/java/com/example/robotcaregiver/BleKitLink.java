@@ -39,6 +39,7 @@ public class BleKitLink implements KitLink {
     private static final UUID SERVICE_UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
     private static final UUID INSTRUCTION_UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e");
     private static final UUID STATUS_UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e");
+    private static final byte[] ADVERT_SERVICE_DATA = new byte[]{0x01};
     private static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
     private final Context context;
@@ -48,8 +49,8 @@ public class BleKitLink implements KitLink {
     private BluetoothLeAdvertiser advertiser;
     private BluetoothGattCharacteristic instructionChar;
     private BluetoothGattCharacteristic statusChar;
-    private BluetoothDevice connectedCentral;
-    private boolean notificationsEnabled;
+    private volatile BluetoothDevice connectedCentral;
+    private volatile boolean notificationsEnabled;
     private final ImbFrame frame = new ImbFrame();
 
     public BleKitLink(Context context){
@@ -153,7 +154,7 @@ public class BleKitLink implements KitLink {
 
         AdvertiseData advertiseData = new AdvertiseData.Builder()
                 .setIncludeDeviceName(false)
-                .addServiceUuid(new ParcelUuid(SERVICE_UUID))
+                .addServiceData(new ParcelUuid(SERVICE_UUID), ADVERT_SERVICE_DATA)
                 .build();
 
         notifyDbg("added service to advertiser");
@@ -227,6 +228,7 @@ public class BleKitLink implements KitLink {
         @Override
         public void onDescriptorWriteRequest(BluetoothDevice device, int requestId, BluetoothGattDescriptor descriptor, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
 
+            boolean wasSubscribed = notificationsEnabled;
             if(CCCD_UUID.equals(descriptor.getUuid())){
                 notificationsEnabled = value.length > 0 && value[0] == BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE[0];
             }
@@ -234,13 +236,20 @@ public class BleKitLink implements KitLink {
             if(responseNeeded && gattServer != null){
                 gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null);
             }
+
+            if(!wasSubscribed && notificationsEnabled){
+                notifyConn(true, "Kit connected");
+            }
+            else if(wasSubscribed && !notificationsEnabled && connectedCentral != null){
+                notifyConn(false, "Kit unsubscribed");
+            }
         }
 
         @Override
         public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
             if(newState == BluetoothProfile.STATE_CONNECTED){
                 connectedCentral = device;
-                notifyConn(true, "Kit connected");
+                notifyDbg("Kit linked, waiting for it to subscribe");
             }
             else if(newState == BluetoothProfile.STATE_DISCONNECTED){
                 connectedCentral = null;
@@ -305,7 +314,7 @@ public class BleKitLink implements KitLink {
 
     @Override
     public boolean isConnected(){
-        return connectedCentral != null;
+        return connectedCentral != null && notificationsEnabled;
     }
 
     private void notifyConn(boolean connected, String msg){

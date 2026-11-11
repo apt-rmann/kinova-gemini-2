@@ -16,6 +16,7 @@ import android.os.Bundle;
 import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.Looper;
+import android.speech.tts.TextToSpeech;
 import android.text.method.ScrollingMovementMethod;
 import android.util.Base64;
 import android.util.Log;
@@ -101,6 +102,12 @@ public class MainActivity extends AppCompatActivity
     private Runnable commandTimeoutTask;
     private boolean awaitingWakeCallEnd = false;
 
+    private static final String ERROR_PREFIX = "error:";
+    private TextToSpeech tts;
+    private boolean ttsReady = false;
+    private final List<String> heldSpeech = new ArrayList<>();
+    private int utteranceSeq = 0;
+
 
     private RecyclerView recyclerView;
     private ChatAdapter chatAdapter;
@@ -169,6 +176,20 @@ public class MainActivity extends AppCompatActivity
         settings = new AppSettings(this);
 
         LibVosk.setLogLevel(LogLevel.WARNINGS);
+
+        tts = new TextToSpeech(this, status -> {
+            if (status != TextToSpeech.SUCCESS) {
+                addStatus("Text-to-speech is unavailable \u2014 robot replies won't be read aloud.", VIEW_TYPE_PHONE);
+                return;
+            }
+            int lang = tts.setLanguage(Locale.US);
+            if (lang == TextToSpeech.LANG_MISSING_DATA || lang == TextToSpeech.LANG_NOT_SUPPORTED) {
+                addStatus("No English text-to-speech voice installed \u2014 robot replies won't be read aloud.", VIEW_TYPE_PHONE);
+                return;
+            }
+            ttsReady = true;
+            flushHeldSpeech();
+        });
 
         findSpeakMode();
 
@@ -289,6 +310,11 @@ public class MainActivity extends AppCompatActivity
     protected void onDestroy() {
         super.onDestroy();
         stopRecognition();
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+            tts = null;
+        }
         if (model != null) {
             model.close();
             model = null;
@@ -366,21 +392,6 @@ public class MainActivity extends AppCompatActivity
                 armCommandTimeout();
             }
         }
-
-//        if (mode == Mode.WAKE) {
-//            String text = extractText(hypothesis, "partial");
-//            if (text.isEmpty()) return;
-//
-//            if (wakePhraseTail(text) != null) {
-//                beginCommandMode(true);
-//            }
-//            return;
-//        }
-//
-//        if(mode == Mode.COMMAND && !awaitingWakeCallEnd){
-//            armCommandTimeout();
-//        }
-
     }
 
     @Override
@@ -395,42 +406,6 @@ public class MainActivity extends AppCompatActivity
 
         Log.d(TAG, "utterance (" + mode + "): " + text);
 
-//        if(awaitingWakeCallEnd){
-//            awaitingWakeCallEnd = false;
-//            String tail = wakePhraseTail(text);
-//            if(tail != null && !tail.isEmpty()){
-//                handleCommand(tail);
-//                mode = Mode.WAKE;
-//                updateVoiceUi();
-//            }
-//
-//            else{
-//                armCommandTimeout();
-//            }
-//
-//            return;
-//        }
-//
-//        if (mode == Mode.COMMAND) {
-//            cancelCommandTimeout();
-//
-//            String tail = wakePhraseTail(text);
-//            handleCommand(tail != null && !tail.isEmpty() ? tail : text);
-//            mode = Mode.WAKE;
-//            updateVoiceUi();
-//            return;
-//        }
-//
-//        if (mode == Mode.WAKE) {
-//            String tail = wakePhraseTail(text);
-//            if (tail == null) return;
-//            if (!tail.isEmpty()) {
-//                // "hey robot, move forward" spoken in one breath
-//                handleCommand(tail);
-//            } else {
-//                beginCommandMode(false);
-//            }
-//        }
         if(mode == Mode.COMMAND){
             awaitingWakeCallEnd = false;
             if(tail != null) commandBuffer.setLength(0);
@@ -492,6 +467,7 @@ public class MainActivity extends AppCompatActivity
 
     private void beginCommandMode(boolean fromPartial) {
         if (mode == Mode.COMMAND) return;
+        stopSpeaking();   // the user is interrupting
         mode = Mode.COMMAND;
         awaitingWakeCallEnd = fromPartial;
         updateVoiceUi();
@@ -507,6 +483,38 @@ public class MainActivity extends AppCompatActivity
         lastPartial = "";
         commandBuffer.setLength(0);
         updateVoiceUi();
+        flushHeldSpeech();   // replies that came in while the user was talking
+    }
+
+    private void speakRobot(@NonNull String text) {
+        if (!ttsReady || mode == Mode.COMMAND) {
+            heldSpeech.add(text);
+            return;
+        }
+        // long replies go in pieces
+        int max = Math.max(1, TextToSpeech.getMaxSpeechInputLength() - 1);
+        String rest = text;
+        while (!rest.isEmpty()) {
+            int end = rest.length();
+            if (end > max) {
+                end = rest.lastIndexOf(' ', max);
+                if (end <= 0) end = max;
+            }
+            tts.speak(rest.substring(0, end), TextToSpeech.QUEUE_ADD, null, "robot-" + (utteranceSeq++));
+            rest = rest.substring(end).trim();
+        }
+    }
+
+    private void flushHeldSpeech() {
+        if (!ttsReady || mode == Mode.COMMAND || heldSpeech.isEmpty()) return;
+        List<String> pending = new ArrayList<>(heldSpeech);
+        heldSpeech.clear();
+        for (String text : pending) speakRobot(text);
+    }
+
+    private void stopSpeaking() {
+        if (tts != null) tts.stop();   // drops anything queued too
+        heldSpeech.clear();
     }
 
     private void armCommandTimeout() {
@@ -517,7 +525,6 @@ public class MainActivity extends AppCompatActivity
         commandTimeoutTask = () -> {
             commandTimeoutTask = null;
             if (commandBuffer.length() > 0){
-//                addStatus("Didn't hear \u201Cend\u201D! Discarded: " + commandBuffer, VIEW_TYPE_PHONE);
                 String cmd = commandBuffer.toString().trim();
                 commandBuffer.setLength(0);
                 endCommandMode();
@@ -656,8 +663,7 @@ public class MainActivity extends AppCompatActivity
 
     /** Ask the kit for its holster block; the reply lands in handleConfigReply. */
     private void requestHolster() {
-        // BLE interface node doesn't route CONFIG lines yet
-        if (kit == null || !kit.isConnected() || settings.isBle()) return;
+        if (kit == null || !kit.isConnected()) return;
         try {
             kit.sendInstruction(CONFIG_PREFIX + new JSONObject()
                     .put("op", "get_holster").put("id", "tablet-sync").toString());
@@ -799,8 +805,13 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override public void onKitStatus(@NonNull String status) {
+        // the kit ends each message with a newline; frames are already length-delimited
+        String text = status.trim();
+        if (text.isEmpty()) return;
         runOnUiThread(() -> {
-            if (!handleConfigReply(status)) addStatus(status, VIEW_TYPE_ROBOT);
+            if (handleConfigReply(text)) return;
+            addStatus(text, VIEW_TYPE_ROBOT);
+            if (!text.startsWith(ERROR_PREFIX)) speakRobot(text);
         });
     }
 
@@ -835,28 +846,6 @@ public class MainActivity extends AppCompatActivity
             frameView.loadDataWithBaseURL(null, htmlData, "text/html", "UTF-8", null);
         });
     }
-
-//    @Override
-//    public void onKitCamera(byte[] image){
-//
-//        String base64Image = Base64.encodeToString(image, Base64.DEFAULT);
-//
-//        String htmlData = "<html><head><style>"
-//                + "body { margin: 0; background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; }"
-//                + "img { width: 100%; height: 100%; object-fit: contain; }"
-//                + "</style></head><body>"
-//                + "<img src='data:image/png;base64,"
-//                + base64Image
-//                + "' />"
-//                + "</body></html>";
-//
-//        runOnUiThread(new Runnable() {
-//            @Override
-//            public void run() {
-////                frameView.loadDataWithBaseURL("file:///android_asset/", htmlData, "text/html", "utf-8", "");
-//            }
-//        });
-//    }
 
     private void addStatus(@NonNull String text, int fromYou) {
         runOnUiThread(() -> {

@@ -16,6 +16,7 @@ def _app_node(transport):
         executable=f'{transport}_interface',
         name=f'{transport}_interface_node',
         output='screen',
+        parameters=[{'auto_launch': False}],
         condition=IfCondition(
             PythonExpression(["'", LaunchConfiguration('app'), "' == '", transport, "'"])),
     )

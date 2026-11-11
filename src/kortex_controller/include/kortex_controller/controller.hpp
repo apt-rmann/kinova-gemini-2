@@ -129,6 +129,7 @@ private:
     void publishState();
     void publishJointStates(const k_api::Base::JointAngles& joints, float gripper_pos);
     void handleStop(const std_msgs::msg::Empty::SharedPtr);
+    void stopArm();   
     void handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr);
     void handleServoVector(const geometry_msgs::msg::Vector3Stamped::SharedPtr);
     float get_gripper_position();

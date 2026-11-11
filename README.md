@@ -59,6 +59,18 @@ Robot stack only, without the agent:
 ros2 launch kinova_bringup robot.launch.py
 ```
 
+### Starting from the phone
+
+You can also start just a phone transport and let the app bring up everything else:
+
+```bash
+ros2 run app_interface network_interface   # or bluetooth_interface / ble_interface
+```
+
+When the app connects, the transport checks the ROS graph for `gemini_agent` / `kinova_controller`. If neither is running it launches `agent.launch.py app:=none` with its `robot_ip`, `username`, `password` and `rviz` parameters and tells the app "Starting the robot..." and then "Robot ready" once the agent is listening. Stopping the transport (Ctrl-C) stops the stack it launched. A stack that was already running is reused and left alone. Set `-p auto_launch:=false` to turn this off.
+
+The controller halts the arm when the transport is stopped.
+
 ### Running a single skill by hand
 
 `skill_cli` calls one skill without the model, which is useful for testing motion and perception:

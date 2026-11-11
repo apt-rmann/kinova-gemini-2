@@ -1,6 +1,7 @@
 from bleak import BleakScanner, BleakClient
 import traceback
 import asyncio
+import time
 from .ble_framing import chunk_status, split_instructions
 
 SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -16,14 +17,19 @@ class BleCentralLink:
 
     """Scans for the phone and connects"""
 
-    def __init__(self, on_instruction, service_uuid = SERVICE_UUID, device_name = None):
+    def __init__(self, on_instruction, service_uuid = SERVICE_UUID, device_name = None, on_connected = None):
 
         self._on_instruction = on_instruction
+        # called once the kit is subscribed to the phone's instruction characteristic
+        self._on_connected = on_connected
         self._service_uuid = service_uuid
         self._device_name = device_name
         self._client = None
         self._inbuf = bytearray()
         self._running = False
+        # one status at a time: each send awaits per frame, and interleaved frames from two
+        # statuses would garble the phone's reassembly. Lock waiters are served in order.
+        self._send_lock = asyncio.Lock()
 
     # async def _find_phone(self):
         # devices = await BleakScanner.discover(timeout = SCAN_TIMEOUT, return_adv = True)
@@ -52,13 +58,16 @@ class BleCentralLink:
     
             def _match(dev, adv):
                 uuids = [u.lower() for u in (adv.service_uuids or [])]
+                # the phone advertises service data keyed by the service UUID; BlueZ drops
+                # advertised UUIDs for a paired phone but still reports its service data
+                sd_uuids = [u.lower() for u in (adv.service_data or {})]
                 name = dev.name or adv.local_name or "(no name)"
     
                 if dev.address not in seen:
                     seen.add(dev.address)
-                    dbg_ble(f"{dev.address} name={name!r} uuids={uuids}")
+                    dbg_ble(f"{dev.address} name={name!r} uuids={uuids} service_data={sd_uuids}")
     
-                if self._service_uuid.lower() in uuids:
+                if self._service_uuid.lower() in uuids or self._service_uuid.lower() in sd_uuids:
                     return True
     
                 if self._device_name and self._device_name.lower() in name.lower():
@@ -105,10 +114,14 @@ class BleCentralLink:
             return
         try:
             frames = chunk_status(text)
-            dbg_ble(f"Sending status ({len(text)} chars) as {len(frames)} frames")
-            for i, f in enumerate(frames, 1):
-                dbg_ble(f"  write frame {i}/{len(frames)} ({len(f)} bytes)")
-                await self._client.write_gatt_char(STATUS_UUID, f, response = False)
+            async with self._send_lock:
+                dbg_ble(f"Sending status ({len(text)} chars) as {len(frames)} frames")
+                for i, f in enumerate(frames, 1):
+                    if self._client is None or not self._client.is_connected:
+                        dbg_ble("  link dropped mid-status, rest not sent")
+                        return
+                    dbg_ble(f"  write frame {i}/{len(frames)} ({len(f)} bytes)")
+                    await self._client.write_gatt_char(STATUS_UUID, f, response = False)
         except Exception:
             dbg_ble("Exception sending status: \n" + traceback.format_exc())
 
@@ -151,13 +164,18 @@ class BleCentralLink:
                     dbg_ble("Subscribed. Waiting for instructions from the phone")
                     self._fail_count = 0
 
-                    import time as _time
-                    t0 = _time.monotonic
+                    if self._on_connected is not None:
+                        try:
+                            self._on_connected()
+                        except Exception:
+                            dbg_ble("Exception in on_connected: \n" + traceback.format_exc())
+
+                    t0 = time.monotonic()
 
                     while client.is_connected and self._running:
                         await asyncio.sleep(1.0)
 
-                    uptime = _time.monotonic - t0
+                    uptime = time.monotonic() - t0
                     dbg_ble(f"Link dropped after {uptime:.1f}s connected")
 
                 dbg_ble("Connection closed")
@@ -172,7 +190,7 @@ class BleCentralLink:
             if self._running:
                 dbg_ble("reconnecting...")
                 self._fail_count = getattr(self, "_fail_count", 0) + 1
-                dbg_ble("attempt {self._fail_count}")
+                dbg_ble(f"attempt {self._fail_count}")
                 await asyncio.sleep(RECONNECT_DELAY)
 
     def stop(self):

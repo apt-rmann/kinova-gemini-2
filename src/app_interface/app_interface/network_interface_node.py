@@ -8,17 +8,19 @@ import json
 import time
 import collections
 
+from .stack_launcher import StackLauncher
+
 LISTEN_PORT = 9100
 CONFIG_PREFIX = "CONFIG "
 
 class NetworkInterfaceNode(Node):
     """
-    Tablet does speech-to-text and sends a plain text instruction over TCP socket. This node
+    App does speech-to-text and sends a plain text instruction over TCP socket. This node
     receives the text and republishes to user_instructions (ala text_interface_node)
 
-    Also forwards brain status strings back to the tablet
+    Also forwards brain status strings back to the app
 
-    Tablet and kit must be on the same Wi-Fi network
+    App and kit must be on the same Wi-Fi network
     """
 
     def __init__(self):
@@ -26,6 +28,7 @@ class NetworkInterfaceNode(Node):
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
         self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
+        self.launcher = StackLauncher(self, self.send_status_line)
 
         self.client_conn = None
         self.client_lock = threading.Lock()
@@ -53,6 +56,8 @@ class NetworkInterfaceNode(Node):
 
             with self.client_lock:
                 self.client_conn = conn
+
+            self.launcher.ensure_running()
 
             buf = b""
             try:
@@ -111,6 +116,14 @@ class NetworkInterfaceNode(Node):
             self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
         elif ev['type'] == 'config':
             self.queue_message(b'\x02', (json.dumps(ev['data'], default=str) + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'error':
+            self.queue_message(b'\x02', ('error: ' + str(ev['data'].get('message', ev['data'])) + "\n").encode("utf-8"), timeData)
+
+    def send_status_line(self, text):
+        """Plain status line to the tablet (stack launcher progress)."""
+        now = time.time()
+        self.queue_message(b'\x02', (text + "\n").encode("utf-8"),
+                           {'time_ev': now, 'time_node_rec': now})
 
     def queue_message(self, packet_type, payload, timeData):
         with self._out_cv:
@@ -140,6 +153,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.launcher.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 if __name__ == '__main__':

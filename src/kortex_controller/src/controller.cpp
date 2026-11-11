@@ -123,6 +123,13 @@ Controller::Controller() : Node("kortex_controller")
     SubServoVector = this->create_subscription<geometry_msgs::msg::Vector3Stamped>(
         "/servo_vector", 10, std::bind(&Controller::handleServoVector, this, _1));
 
+    // halt the arm when ROS shuts down (Ctrl-C / SIGINT from ros2 launch): Kortex runs pose and
+    // joint moves on the arm itself, so they would otherwise finish after the node is gone
+    this->get_node_base_interface()->get_context()->add_pre_shutdown_callback([this]() {
+        stopArm();
+        RCLCPP_WARN(this->get_logger(), "Controller shutting down - arm halted.");
+    });
+
     RCLCPP_INFO(this->get_logger(), "Kinova Controller Initialized");
     
 }
@@ -243,6 +250,13 @@ void Controller::publishJointStates(const k_api::Base::JointAngles& joints, floa
 // --- Subscribers ---
 void Controller::handleStop(const std_msgs::msg::Empty::SharedPtr)
 {
+    stopArm();
+    RCLCPP_WARN(this->get_logger(), "Stop requested on /stop - arm halted.");
+}
+
+
+void Controller::stopArm()
+{
     // halt the arm immediately, independent of whatever action thread is running
     {
         std::lock_guard<std::mutex> lock(mApiMutex);
@@ -252,8 +266,8 @@ void Controller::handleStop(const std_msgs::msg::Empty::SharedPtr)
             RCLCPP_ERROR(this->get_logger(), "Kortex error while stopping: %s", ex.what());
         }
     }
+    // every motion polling loop checks this and gives up
     mStopRequested = true;
-    RCLCPP_WARN(this->get_logger(), "Stop requested on /stop - arm halted.");
 }
 
 

@@ -10,6 +10,8 @@ import json
 import time
 import collections
 
+from .stack_launcher import StackLauncher
+
 RFCOMM_CHANNEL = 1
 
 # Anaconda's CPython is built without <bluetooth/bluetooth.h>, so its socket module has no
@@ -87,6 +89,7 @@ class BluetoothInterfaceNode(Node):
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
         self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
+        self.launcher = StackLauncher(self, self.send_status_line)
 
         self.client_conn = None
         self.client_lock = threading.Lock()
@@ -125,6 +128,8 @@ class BluetoothInterfaceNode(Node):
 
             with self.client_lock:
                 self.client_conn = conn
+
+            self.launcher.ensure_running()
 
             buf = b""
             try:
@@ -184,7 +189,15 @@ class BluetoothInterfaceNode(Node):
             self.queue_message(b'\x02', ('thinking: ' + ev['data']['text'] + "\n").encode("utf-8"), timeData)
         elif ev['type'] == 'config':
             self.queue_message(b'\x02', (json.dumps(ev['data'], default=str) + "\n").encode("utf-8"), timeData)
+        elif ev['type'] == 'error':
+            self.queue_message(b'\x02', ('error: ' + str(ev['data'].get('message', ev['data'])) + "\n").encode("utf-8"), timeData)
     
+    def send_status_line(self, text):
+        """Plain status line to the tablet (stack launcher progress)."""
+        now = time.time()
+        self.queue_message(b'\x02', (text + "\n").encode("utf-8"),
+                           {'time_ev': now, 'time_node_rec': now})
+
     def queue_message(self, packet_type, payload, timeData):
         with self._out_cv:
             self._text_q.append((packet_type, payload, timeData))
@@ -213,6 +226,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        node.launcher.shutdown()
         # Release the RFCOMM channel promptly so an immediate relaunch can rebind it.
         for sock in (node.client_conn, node.server):
             if sock is not None:
@@ -224,4 +238,4 @@ def main(args=None):
         rclpy.shutdown()
 
 if __name__ == '__main__':
-    main()
+    main()
