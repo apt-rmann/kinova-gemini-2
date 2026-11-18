@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Vector3Stamped
 from rclpy.action import ActionClient
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 
 from ros2_interfaces.action import CommandGripper, MoveStraight, MoveToJoints, MoveToPose, ServoToTarget
 from ros2_interfaces.msg import RobotState
@@ -45,6 +45,7 @@ class Robot:
         }
         self._set_tool_length = node.create_client(SetToolLength, 'set_tool_length')
         self._servo_pub = node.create_publisher(Vector3Stamped, '/servo_vector', 10)
+        self._free_move_pub = node.create_publisher(Bool, '/free_move', 10)
 
         self._state = None
         node.create_subscription(RobotState, ros['state_topic'], self._on_state, 10)
@@ -139,6 +140,18 @@ class Robot:
         res = await self._await_rclpy_future(self._set_tool_length.call_async(request))
         return ActionResult(res.success, 'succeeded' if res.success else 'aborted', res.message)
 
+    async def set_free_move(self, enabled:bool, timeout: float = 2.0) -> ActionResult:
+        """Let the arm be moved by hand (enabled true), or lock it (enabled false)"""
+        self._free_move_pub.publish(Bool(data=bool(enabled)))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._state is not None and self._state.free_move ==  enabled:
+                return ActionResult(True, 'succeeded')
+            await asyncio.sleep(0.05)
+        return ActionResult(False, 'failed', f"arm did not switch free-move {'on' if enabled else 'off'}")
+
+    
+
     # --- helpers ---
 
     def state(self) -> dict:
@@ -152,6 +165,8 @@ class Robot:
         }
         if s.tool_length:  # ee_xyz is the tool tip while a tool is attached
             out['tool_length'] = round(float(s.tool_length), 3)
+        if s.free_move:
+            out['free_move'] = True
         if self._include_theta:
             out['ee_theta_deg'] = [int(round(float(s.theta_x))),
                                    int(round(float(s.theta_y))),
@@ -190,6 +205,12 @@ class Robot:
 
     def interrupted_result(self, reason: str) -> dict:
         return {'ok': False, 'status': 'interrupted', 'reason': reason, 'robot': self.state()}
+
+    def joint_angles(self):
+        """Measured angles in degrees"""
+        if self._state is None:
+            return None
+        return [round(float(a), 1) for a in self._state.joint_angles]
 
     # --- internals ---
 

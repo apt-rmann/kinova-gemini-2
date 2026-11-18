@@ -123,6 +123,10 @@ Controller::Controller() : Node("kortex_controller")
     SubServoVector = this->create_subscription<geometry_msgs::msg::Vector3Stamped>(
         "/servo_vector", 10, std::bind(&Controller::handleServoVector, this, _1));
 
+    SubFreeMove = this->create_subscription<std_msgs::msg::Bool>(
+        "/free_move", 10, std::bind(&Controller::handleFreeMove, this, _1));
+    
+
     // halt the arm when ROS shuts down (Ctrl-C / SIGINT from ros2 launch): Kortex runs pose and
     // joint moves on the arm itself, so they would otherwise finish after the node is gone
     this->get_node_base_interface()->get_context()->add_pre_shutdown_callback([this]() {
@@ -139,6 +143,12 @@ Controller::Controller() : Node("kortex_controller")
 
 // Command Gripper Callbacks
 rclcpp_action::GoalResponse Controller::handle_gripper_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const CommandGripper::Goal>) {
+    
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting goal: arm is in free-move");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
     mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -151,6 +161,12 @@ void Controller::handle_gripper_accepted(const std::shared_ptr<GoalHandleCommand
 
 // Move Straight Callbacks
 rclcpp_action::GoalResponse Controller::handle_straight_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const MoveStraight::Goal>) {
+    
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting goal: arm is in free-move");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
     mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -163,6 +179,12 @@ void Controller::handle_straight_accepted(const std::shared_ptr<GoalHandleMoveSt
 
 // Move to Joints Callbacks
 rclcpp_action::GoalResponse Controller::handle_joints_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ros2_interfaces::action::MoveToJoints::Goal>) {
+    
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting goal: arm is in free-move");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
     mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -175,6 +197,12 @@ void Controller::handle_joints_accepted(const std::shared_ptr<GoalHandleMoveToJo
 
 // Move to Pose Callbacks
 rclcpp_action::GoalResponse Controller::handle_pose_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ros2_interfaces::action::MoveToPose::Goal>) {
+    
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting goal: arm is in free-move");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
     mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -187,6 +215,12 @@ void Controller::handle_pose_accepted(const std::shared_ptr<GoalHandleMoveToPose
 
 // Servo to Target Callbacks
 rclcpp_action::GoalResponse Controller::handle_servo_goal(const rclcpp_action::GoalUUID &, std::shared_ptr<const ServoToTarget::Goal>) {
+    
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting goal: arm is in free-move");
+        return rclcpp_action::GoalResponse::REJECT;
+    }
+    
     mStopRequested = false;
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -213,6 +247,7 @@ void Controller::publishState()
         for (int i = 0; i < 7; ++i) msg.joint_angles[i] = joints.joint_angles(i).value();
         msg.gripper_position = gripper_pos;
         msg.tool_length = mToolLength;
+        msg.free_move = mFreeMove;
         PubState->publish(msg);
 
         publishJointStates(joints, gripper_pos);
@@ -262,6 +297,12 @@ void Controller::stopArm()
         std::lock_guard<std::mutex> lock(mApiMutex);
         try {
             mBase->Stop();
+            if (mFreeMove) {
+                k_api::Base::Admittance off;
+                off.set_admittance_mode(k_api::Base::AdmittanceMode::DISABLED);
+                mBase->SetAdmittance(off);
+                mFreeMove = false;
+            }
         } catch (std::exception& ex) {
             RCLCPP_ERROR(this->get_logger(), "Kortex error while stopping: %s", ex.what());
         }
@@ -270,12 +311,49 @@ void Controller::stopArm()
     mStopRequested = true;
 }
 
+bool Controller::setFreeMove(bool enabled, std::string& error_out)
+{
+    if(enabled) stopArm();
+    k_api::Base::Admittance admittance;
+    admittance.set_admittance_mode(enabled ? k_api::Base::AdmittanceMode::JOINT : k_api::Base::AdmittanceMode::DISABLED);
+    std::lock_guard<std::mutex> lock(mApiMutex);
+
+    try{
+        mBase->SetAdmittance(admittance);
+    }
+    catch(std::exception& ex){
+        error_out = ex.what();
+        return false;
+    }
+
+    mFreeMove = enabled;
+    return true;
+}
+
+void Controller::handleFreeMove(const std_msgs::msg::Bool::SharedPtr msg)
+{
+    if (!msg->data && !mFreeMove) return; // already not in admittance mode, don't do anything
+
+    std::string error;
+    if (setFreeMove(msg->data, error)){
+        RCLCPP_INFO(this->get_logger(), "Free-move %s", msg->data ? "on" : "off");
+    }
+    else{
+        RCLCPP_ERROR(this->get_logger(), "Free-move %s failed: %s", msg-> data ? "on" : "off", error.c_str());
+    }
+}
+
 
 void Controller::handleJointVelocity(const std_msgs::msg::Float64MultiArray::SharedPtr msg)
 {
     if (msg->data.size() != 7) {
         RCLCPP_ERROR(this->get_logger(), "/joint_velocity needs 7 values, got %zu", msg->data.size());
         return;
+    }
+
+    if (mFreeMove) {
+        RCLCPP_WARN(this->get_logger(), "Rejecting, arm is in free-move");
+        return ;
     }
 
     // Kortex latches the last speed command, so all-zeros is how the caller stops the arm
@@ -307,6 +385,7 @@ void Controller::handleJointVelocity(const std_msgs::msg::Float64MultiArray::Sha
 
 void Controller::handleServoVector(const geometry_msgs::msg::Vector3Stamped::SharedPtr msg)
 {
+
     std::lock_guard<std::mutex> lock(mServoMutex);
     mServoVector[0] = msg->vector.x;
     mServoVector[1] = msg->vector.y;

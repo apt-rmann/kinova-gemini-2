@@ -149,4 +149,16 @@
         android:textColor="@color/white"
         android:backgroundTint="@color/btn_background_selector"/>
 
+    <Button
+        android:id="@+id/doneButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:minHeight="48dp"
+        android:textSize="20sp"
+        android:text="Hey Robot, I'm done"
+        android:textColor="@color/white"
+        android:backgroundTint="@color/stop_red"
+        android:visibility="gone"/>
+
 </LinearLayout>

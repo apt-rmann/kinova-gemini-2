@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 
 import asyncio
 import threading
@@ -8,7 +8,7 @@ import traceback
 import json
 
 from .ble_link import BleCentralLink, dbg_ble
-from .stack_launcher import StackLauncher
+from .stack_launcher import StackLauncher, STACK_PREFIX
 
 CONFIG_PREFIX = "CONFIG "
 
@@ -24,11 +24,12 @@ class BLEInterfaceNode(Node):
     def __init__(self):
         super().__init__('ble_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
+        self.free_move_publisher = self.create_publisher(Bool, '/free_move', 10)
         self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
         self.launcher = StackLauncher(self, self.send_status_line)
         self._loop = None
-        self._link = BleCentralLink(self.handle_line, on_connected=self._on_connected)
+        self._link = BleCentralLink(self.handle_line, on_connected=self._on_connected, on_disconnected=self._on_disconnected)
         self._thread = threading.Thread(target = self._run_ble, daemon = True)
         self._thread.start()
         self.get_logger().info("BLE Node started scanning for phone")
@@ -45,13 +46,26 @@ class BLEInterfaceNode(Node):
         self.get_logger().info('Phone BLE connected')
         self.launcher.ensure_running()
 
+    def _on_disconnected(self):
+        self.get_logger().info("Phone BLE disconnected")
+        self.free_move_publisher.publish(Bool(data=False))
+
     def handle_line(self, line):
         if line.startswith(CONFIG_PREFIX):
             payload = line[len(CONFIG_PREFIX):].strip()
             self.config_publisher.publish(String(data=payload))
             dbg_ble(f'Published to /config_update: "{payload}"')
+        elif line.startswith(STACK_PREFIX):
+            self.handle_stack_command(line[len(STACK_PREFIX):].strip())
         else:
-            self.publish_instruction(line)
+            self.launcher.submit_instruction(line, self.publish_instruction)
+
+    def handle_stack_command(self, command):
+        if command == 'stop':
+            self.free_move_publisher.publish(Bool(data=False))   # leave the arm locked
+            self.launcher.stop()
+        else:
+            self.get_logger().warn(f'Unknown stack command from the app: {command!r}')
 
     def publish_instruction(self, text):
         msg = String()

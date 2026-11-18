@@ -67,7 +67,7 @@ import java.util.Locale;
 import java.util.Set;
 
 public class MainActivity extends AppCompatActivity
-        implements TcpClientKitLink.Listener, RecognitionListener {
+        implements RecognitionListener, KitMessages.Listener {
 
     private static final boolean DEBUGGING = false;
     private static final String PREFS = "robot_caregiver_settings";
@@ -82,6 +82,7 @@ public class MainActivity extends AppCompatActivity
     };
 
     private static final String STOP_WORD = "I'm finished";
+    private static final Set<String> DONE_PHRASES = new HashSet<>(Arrays.asList("im done", "i am done"));
     private static final float MIN_WORD_CONF = 0.8f;
     private static final Set<String> FILLER = new HashSet<>(Arrays.asList("the", "a", "uh", "um", "huh", "hm", "oh", "ah", "mm"));
     private static StringBuilder commandBuffer = new StringBuilder();
@@ -121,20 +122,15 @@ public class MainActivity extends AppCompatActivity
     private ImageButton settingsButton;
     private ImageButton robotButton;
     private Button connectButton;
+    private Button doneButton;
 
     private KitLink kit;
     private AppSettings settings;
     private ActivityResultLauncher<Intent> settingsLauncher;
-    private ActivityResultLauncher<Intent> robotLauncher;
     private ActivityResultLauncher<String[]> permissionLauncher;
 
     // "<transport>:<address>" of the current/last connection, so Settings changes can reconnect
     private String connectedTarget;
-    // Lines starting with this go to the kit's /config_update topic (config_editor), not the model
-    private static final String CONFIG_PREFIX = "CONFIG ";
-    // Kit's holster (config.yaml `tools:` block, {"<tool>": {"marker": id, "length": m}}) from
-    // its last config reply; null = not known
-    @Nullable private JSONObject kitHolster;
     private static final int KIT_PORT = 9100;
     private static final long CONNECT_TIMEOUT = 30000;
     private CountDownTimer connectTimer;
@@ -156,6 +152,7 @@ public class MainActivity extends AppCompatActivity
         settingsButton  = findViewById(R.id.settingsButton);
         robotButton     = findViewById(R.id.robotButton);
         connectButton   = findViewById(R.id.connectButton);
+        doneButton      = findViewById(R.id.doneButton);
         frameView       = findViewById(R.id.frameView);
 
         WebSettings webSettings = frameView.getSettings();
@@ -197,9 +194,7 @@ public class MainActivity extends AppCompatActivity
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> onSettingsClosed());
 
-        robotLauncher = registerForActivityResult(
-                new ActivityResultContracts.StartActivityForResult(),
-                result -> onRobotClosed(result.getResultCode(), result.getData()));
+        KitMessages.addListener(this);
 
         permissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestMultiplePermissions(),
@@ -258,13 +253,9 @@ public class MainActivity extends AppCompatActivity
         settingsButton.setOnClickListener(v ->
                 settingsLauncher.launch(new Intent(this, SettingsActivity.class)));
         connectButton.setOnClickListener(v -> connectToKit());
-        robotButton.setOnClickListener(v -> {
-            Intent intent = new Intent(this, RobotActivity.class);
-            if (kitHolster != null) {
-                intent.putExtra(RobotActivity.EXTRA_CURRENT_HOLSTER, kitHolster.toString());
-            }
-            robotLauncher.launch(intent);
-        });
+        doneButton.setOnClickListener(v -> stopRobot());
+        robotButton.setOnClickListener(v ->
+                startActivity(new Intent(this, RobotActivity.class)));
 
         frameView.setVisibility((!settings.isBle() & !settings.isBluetooth()) ? VISIBLE : GONE);
 
@@ -320,6 +311,8 @@ public class MainActivity extends AppCompatActivity
             model = null;
         }
         cancelConnectCountdown();
+        KitMessages.removeListener(this);
+        KitMessages.setLink(null);
         if (kit != null) kit.disconnect();
     }
 
@@ -591,9 +584,22 @@ public class MainActivity extends AppCompatActivity
         return true;
     }
 
+    // "I'm done" button / phrase -> end the robot stack on the kit.
+    private void stopRobot() {
+        if (!KitMessages.stopRobot()) {
+            addStatus("Not connected to the kit.", VIEW_TYPE_PHONE);
+        }
+    }
+
     private void handleCommand(@NonNull String raw) {
         String text = normalize(raw);
         if (text.isEmpty()) return;
+
+        if (DONE_PHRASES.contains(text)) {
+            addStatus(text, VIEW_TYPE_YOU);
+            stopRobot();
+            return;
+        }
 
         addStatus(text, VIEW_TYPE_YOU);
 
@@ -604,11 +610,9 @@ public class MainActivity extends AppCompatActivity
             connectToKit();
             return;
         }
-        if (kit == null || !kit.isConnected()) {
+        if (!KitMessages.sendInstruction(text)) {
             addStatus("Not connected to the kit — say \u201Chey robot, connect\u201D first.", VIEW_TYPE_PHONE);
-            return;
         }
-        kit.sendInstruction(text);
     }
 
     private void updateVoiceUi() {
@@ -645,62 +649,24 @@ public class MainActivity extends AppCompatActivity
                 startStopButton.setBackgroundTintList(ColorStateList.valueOf(ContextCompat.getColor(this, R.color.mh_1)));
             }
 
+            doneButton.setText(speakMode ? "“Hey Robot, I'm Done”" : "I'm Done");
+
         });
     }
 
-    private void onRobotClosed(int resultCode, @Nullable Intent data) {
-        if (resultCode != RESULT_OK || data == null) return;
-        String[] ops = data.getStringArrayExtra(RobotActivity.EXTRA_CONFIG_OPS);
-        if (ops == null || ops.length == 0) return;
-        if (kit == null || !kit.isConnected()) {
-            addStatus("Not connected to the kit — holster config not sent.", VIEW_TYPE_PHONE);
-            return;
-        }
-        for (String op : ops) {
-            kit.sendInstruction(CONFIG_PREFIX + op);
-        }
-    }
-
-    /** Ask the kit for its holster block; the reply lands in handleConfigReply. */
-    private void requestHolster() {
-        if (kit == null || !kit.isConnected()) return;
-        try {
-            kit.sendInstruction(CONFIG_PREFIX + new JSONObject()
-                    .put("op", "get_holster").put("id", "tablet-sync").toString());
-        } catch (JSONException e) {
-            Log.w("MainActivity", "couldn't build get_holster", e);
-        }
-    }
-
-    /**
-     * If status is a config_editor reply ({"op", "ok", "tools", ...}), cache the holster and
-     * show a short result instead of the raw JSON. Returns false for any other status text.
-     */
-    private boolean handleConfigReply(@NonNull String status) {
-        String text = status.trim();
-        if (!text.startsWith("{")) return false;
-        JSONObject reply;
-        try {
-            reply = new JSONObject(text);
-        } catch (JSONException e) {
-            return false;
-        }
-        if (!reply.has("ok") || !reply.has("tools")) return false;
-
-        JSONObject holster = reply.optJSONObject("tools");
-        if (holster != null) kitHolster = holster;
-
+    // Show a result for each config reply
+    @Override
+    public void onConfigReply(@NonNull JSONObject reply) {
         String message = reply.optString("message", "");
         if (!reply.optBoolean("ok", false)) {
-            addStatus("Holster update failed: " + (message.isEmpty() ? "unknown error" : message),
+            addStatus("Config update failed: " + (message.isEmpty() ? "unknown error" : message),
                     VIEW_TYPE_PHONE);
         } else if (!message.isEmpty()) {
-            addStatus("Holster: " + message, VIEW_TYPE_PHONE);
+            addStatus("Config: " + message, VIEW_TYPE_PHONE);
         }
-        return true;
     }
 
-    /** "<transport>:<address>" for the current Settings; null if that transport's address is unset. */
+    // transport & addr for address current comm settings
     @Nullable
     private String settingsTarget() {
         if (settings.isBle()) return "ble:";   // BLE needs no address
@@ -709,7 +675,7 @@ public class MainActivity extends AppCompatActivity
         return (settings.isBluetooth() ? "bluetooth:" : "wifi:") + address.trim();
     }
 
-    /** Tell the user which address is missing for the selected transport. */
+    // tell the user which address is missing
     private void reportMissingAddress() {
         addStatus(settings.isBluetooth()
                         ? "No kit selected. Open Settings and pick the kit's Bluetooth device."
@@ -725,7 +691,7 @@ public class MainActivity extends AppCompatActivity
             return;
         }
         // reconnect if the transport or its address changed, or we aren't connected
-        if (!target.equals(connectedTarget) || kit == null || !kit.isConnected()) {
+        if (!target.equals(connectedTarget) || !KitMessages.isConnected()) {
             if(DEBUGGING) addStatus("Settings changed. Reconnecting to " + target + "\u2026", VIEW_TYPE_PHONE);
             connectToKit();
         }
@@ -743,7 +709,7 @@ public class MainActivity extends AppCompatActivity
         }
 
         if (kit != null) {
-            kit.setListener(null);
+            KitMessages.setLink(null);
             kit.disconnect();
         }
 
@@ -751,8 +717,7 @@ public class MainActivity extends AppCompatActivity
         kit = settings.isBluetooth()
                 ? new BluetoothKitLink(settings.getKitMac(), settings.getChannel(), this)
                 : (settings.isBle() ? new BleKitLink(this) : new TcpClientKitLink(host, KIT_PORT, this));
-        kit.setListener(this);
-
+        KitMessages.setLink(kit);
         addStatus("Connecting over " + type + "\u2026", VIEW_TYPE_PHONE);
         startConnectCountdown();
         kit.connect();
@@ -773,11 +738,7 @@ public class MainActivity extends AppCompatActivity
                     addStatus("Could not connect within 30 seconds. Tap Connect to try again.", VIEW_TYPE_PHONE);
                     connectButton.setText("Connect");
                     connectButton.setEnabled(true);
-                    if (kit != null) {
-                        kit.setListener(null);
-                        kit.disconnect();
-                        kit.setListener(MainActivity.this);
-                    }
+                    KitMessages.disconnectQuietly();
                 }
             }.start();
         });
@@ -796,7 +757,9 @@ public class MainActivity extends AppCompatActivity
                 addStatus("Connected to kit!", VIEW_TYPE_PHONE);
                 cancelConnectCountdown();
                 connectButton.setVisibility(GONE);
+                doneButton.setVisibility(VISIBLE);
             } else {
+                doneButton.setVisibility(GONE);
                 connectButton.setText("Connect");
                 connectButton.setVisibility(VISIBLE);
                 connectButton.setEnabled(true);
@@ -804,27 +767,15 @@ public class MainActivity extends AppCompatActivity
         });
     }
 
-    @Override public void onKitStatus(@NonNull String status) {
-        // the kit ends each message with a newline; frames are already length-delimited
-        String text = status.trim();
-        if (text.isEmpty()) return;
-        runOnUiThread(() -> {
-            if (handleConfigReply(text)) return;
-            addStatus(text, VIEW_TYPE_ROBOT);
-            if (!text.startsWith(ERROR_PREFIX)) speakRobot(text);
-        });
+    // status from the kit
+    @Override public void onKitStatus(@NonNull String text) {
+        addStatus(text, VIEW_TYPE_ROBOT);
+        if (!text.startsWith(ERROR_PREFIX)) speakRobot(text);
     }
 
     @Override public void onKitConnectionChanged(boolean connected, @NonNull String detail) {
         setConnectedUi(connected);
-        runOnUiThread(() -> {
-            toast(detail);
-            if (connected) {
-                requestHolster();
-            } else {
-                kitHolster = null;   // re-sync on the next connection
-            }
-        });
+        if (!detail.isEmpty()) toast(detail);
     }
 
     @Override public void onDbgMsg(@NonNull String msg) {
@@ -832,9 +783,9 @@ public class MainActivity extends AppCompatActivity
     }
 
     @Override
-    public void onKitCamera(String streamUrl) {
+    public void onKitCamera(@NonNull String streamUrl) {
         runOnUiThread(() -> {
-            // Mimic the original layout using an HTML payload injected locally
+            // Mimic the original layout using an HTML payload
             String htmlData = "<html><head><style>"
                     + "body { margin: 0; background-color: #1a1a1a; display: flex; justify-content: center; align-items: center; height: 100vh; }"
                     + "img { width: 100%; height: 100%; object-fit: contain; }"

@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 import ctypes
 import struct
 import os
@@ -10,7 +10,7 @@ import json
 import time
 import collections
 
-from .stack_launcher import StackLauncher
+from .stack_launcher import StackLauncher, STACK_PREFIX
 
 RFCOMM_CHANNEL = 1
 
@@ -87,6 +87,7 @@ class BluetoothInterfaceNode(Node):
     def __init__(self):
         super().__init__('bluetooth_interface_node')
         self.publisher = self.create_publisher(String, '/user_instructions', 10)
+        self.free_move_publisher = self.create_publisher(Bool, '/free_move', 10)
         self.config_publisher = self.create_publisher(String, '/config_update', 10)
         self.create_subscription(String, '/agent/events', self.status_callback, 10)
         self.launcher = StackLauncher(self, self.send_status_line)
@@ -146,6 +147,8 @@ class BluetoothInterfaceNode(Node):
             except OSError as e: 
                 self.get_logger().warn(f'Connection ended: {e}')
             finally:
+                #turn off admittance mode if connection lost while updating config presets
+                self.free_move_publisher.publish(Bool(data=False))
                 with self.client_lock:
                     self.client_conn = None
                 try:
@@ -207,8 +210,17 @@ class BluetoothInterfaceNode(Node):
         if line.startswith(CONFIG_PREFIX):
             payload = line[len(CONFIG_PREFIX):].strip()
             self.config_publisher.publish(String(data=payload))
+        elif line.startswith(STACK_PREFIX):
+            self.handle_stack_command(line[len(STACK_PREFIX):].strip())
         else:
-            self.publish_instruction(line)
+            self.launcher.submit_instruction(line, self.publish_instruction)
+
+    def handle_stack_command(self, command):
+        if command == 'stop':
+            self.free_move_publisher.publish(Bool(data=False))   # leave the arm locked
+            self.launcher.stop()
+        else:
+            self.get_logger().warn(f'Unknown stack command from the app: {command!r}')
 
     def publish_instruction(self, instruction):
         msg = String()

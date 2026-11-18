@@ -17,11 +17,12 @@ class BleCentralLink:
 
     """Scans for the phone and connects"""
 
-    def __init__(self, on_instruction, service_uuid = SERVICE_UUID, device_name = None, on_connected = None):
+    def __init__(self, on_instruction, service_uuid = SERVICE_UUID, device_name = None, on_connected = None, on_disconnected = None):
 
         self._on_instruction = on_instruction
         # called once the kit is subscribed to the phone's instruction characteristic
         self._on_connected = on_connected
+        self._on_disconnected = on_disconnected
         self._service_uuid = service_uuid
         self._device_name = device_name
         self._client = None
@@ -128,6 +129,7 @@ class BleCentralLink:
     async def run(self):
         self._running = True
         while self._running:
+            connected = False
             try:
                 device = await self._find_phone()
                 if device is None:
@@ -170,6 +172,7 @@ class BleCentralLink:
                         except Exception:
                             dbg_ble("Exception in on_connected: \n" + traceback.format_exc())
 
+                    connected = True
                     t0 = time.monotonic()
 
                     while client.is_connected and self._running:
@@ -186,6 +189,11 @@ class BleCentralLink:
 
             finally:
                 self._client = None
+                if connected and self._on_disconnected is not None:
+                    try:
+                        self._on_disconnected()
+                    except Exception:
+                        dbg_ble("Exception in on_disconneccted: \n" + traceback.format_exc())
 
             if self._running:
                 dbg_ble("reconnecting...")
